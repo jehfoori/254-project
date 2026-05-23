@@ -76,6 +76,41 @@ struct wspawn_t {
   Word      nextPC;
 };
 
+struct cooperative_ctx_t {
+  static constexpr uint32_t kMaxCopies = 2;
+
+  uint32_t team_id;
+  uint32_t team_rank_x;
+  uint32_t team_rank_y;
+  uint32_t team_size_x;
+  uint32_t team_size_y;
+  uint32_t tile_rows;
+  uint32_t global_stride;
+  uint32_t copy_mode[kMaxCopies];
+  uint64_t global_addr[kMaxCopies];
+  uint32_t src_offset[kMaxCopies];
+  uint32_t copy_size[kMaxCopies];
+  uint32_t dst_mask[kMaxCopies];
+
+  cooperative_ctx_t()
+    : team_id(0xffffffff)
+    , team_rank_x(0)
+    , team_rank_y(0)
+    , team_size_x(0)
+    , team_size_y(0)
+    , tile_rows(0)
+    , global_stride(0)
+  {
+    for (uint32_t i = 0; i < kMaxCopies; ++i) {
+      copy_mode[i] = 0;
+      global_addr[i] = 0;
+      src_offset[i] = 0;
+      copy_size[i] = 0;
+      dst_mask[i] = 0;
+    }
+  }
+};
+
 ///////////////////////////////////////////////////////////////////////////////
 
 class Emulator {
@@ -119,6 +154,12 @@ public:
   void set_debug_module(::DebugModule* dm);
   ::DebugModule* get_debug_module() const;
 
+  const cooperative_ctx_t& cooperative_ctx() const {
+    return cooperative_ctx_;
+  }
+
+  void clear_cooperative_copy();
+
 private:
 
   uint32_t fetch(uint32_t wid, uint64_t uuid);
@@ -160,12 +201,14 @@ private:
   std::vector<warp_t> warps_;
   WarpMask    active_warps_;
   WarpMask    stalled_warps_;
+  WarpMask    cooperative_barrier_;
   std::vector<WarpMask> barriers_;
   std::unordered_map<int, std::stringstream> print_bufs_;
   MemoryUnit  mmu_;
   uint32_t    ipdom_size_;
   Word        csr_mscratch_;
   wspawn_t    wspawn_;
+  cooperative_ctx_t cooperative_ctx_;
 
   // PC of the last warp to become inactive, used by the debug module to
   // report the final PC when the program completes.

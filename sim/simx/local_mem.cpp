@@ -73,6 +73,14 @@ public:
 		ram_.write(data, l_addr, size);
 	}
 
+	void copy_from(Impl& src, uint64_t src_addr, uint64_t dst_addr, uint32_t size) {
+		std::vector<uint8_t> buffer(size);
+		src.read(buffer.data(), src_addr, size);
+		this->write(buffer.data(), dst_addr, size);
+		perf_stats_.copies += 1;
+		perf_stats_.copy_bytes += size;
+	}
+
 	void tick() {
 		// process bank requets from xbar
 		uint32_t num_banks = (1 << config_.B);
@@ -128,6 +136,10 @@ void LocalMem::read(void* data, uint64_t addr, uint32_t size) {
 
 void LocalMem::write(const void* data, uint64_t addr, uint32_t size) {
   impl_->write(data, addr, size);
+}
+
+void LocalMem::copy_from(const LocalMem& src, uint64_t src_addr, uint64_t dst_addr, uint32_t size) {
+  impl_->copy_from(*src.impl_, src_addr, dst_addr, size);
 }
 
 void LocalMem::tick() {

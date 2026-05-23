@@ -31,6 +31,10 @@
 
 using namespace vortex;
 
+static constexpr uint32_t kCooperativeBarrierId = 0xC0000000u;
+static constexpr uint32_t kCooperativeArriveId  = 0xC0000001u;
+static constexpr uint32_t kCooperativeWaitId    = 0xC0000002u;
+
 warp_t::warp_t(uint32_t num_threads)
   : ireg_file(MAX_NUM_REGS, std::vector<Word>(num_threads))
   , freg_file(MAX_NUM_REGS, std::vector<uint64_t>(num_threads))
@@ -123,6 +127,7 @@ void Emulator::reset() {
 
   stalled_warps_.reset();
   active_warps_.reset();
+  cooperative_barrier_.reset();
 
   // activate first warp and thread
   active_warps_.set(0);
@@ -272,6 +277,16 @@ void Emulator::set_debug_module(::DebugModule* dm) {
   return debug_module_;
 }
 
+void Emulator::clear_cooperative_copy() {
+  for (uint32_t i = 0; i < cooperative_ctx_t::kMaxCopies; ++i) {
+    cooperative_ctx_.copy_mode[i] = 0;
+    cooperative_ctx_.global_addr[i] = 0;
+    cooperative_ctx_.src_offset[i] = 0;
+    cooperative_ctx_.copy_size[i] = 0;
+    cooperative_ctx_.dst_mask[i] = 0;
+  }
+}
+
 void Emulator::suspend(uint32_t wid) {
   assert(!stalled_warps_.test(wid));
   stalled_warps_.set(wid);
@@ -299,6 +314,29 @@ bool Emulator::wspawn(uint32_t num_warps, Word nextPC) {
 bool Emulator::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
   if (count < 2)
     return true;
+
+  if (bar_id == kCooperativeBarrierId
+   || bar_id == kCooperativeArriveId
+   || bar_id == kCooperativeWaitId) {
+    cooperative_barrier_.set(wid);
+    DP(3, "*** Suspend core #" << core_->id() << ", warp #" << wid << " at cooperative barrier");
+    if (cooperative_barrier_.count() == active_warps_.count()) {
+      if (bar_id == kCooperativeBarrierId) {
+        core_->socket()->cluster()->cooperative_barrier(core_->id());
+      } else if (bar_id == kCooperativeArriveId) {
+        core_->socket()->cluster()->cooperative_arrive(core_->id());
+        for (uint32_t i = 0; i < arch_.num_warps(); ++i) {
+          if (cooperative_barrier_.test(i)) {
+            stalled_warps_.reset(i);
+          }
+        }
+      } else {
+        core_->socket()->cluster()->cooperative_wait(core_->id());
+      }
+      cooperative_barrier_.reset();
+    }
+    return false;
+  }
 
   uint32_t bar_idx = bar_id & 0x7fffffff;
   bool is_global = (bar_id >> 31);
@@ -510,6 +548,21 @@ Word Emulator::get_csr(uint32_t addr, uint32_t wid, uint32_t tid) {
   case VX_CSR_NUM_WARPS:  return arch_.num_warps();
   case VX_CSR_NUM_CORES:  return uint32_t(arch_.num_cores()) * arch_.num_clusters();
   case VX_CSR_LOCAL_MEM_BASE: return arch_.local_mem_base();
+  case VX_CSR_TEAM_ID:    return cooperative_ctx_.team_id;
+  case VX_CSR_TEAM_RANK:  return (cooperative_ctx_.team_rank_y << 16) | cooperative_ctx_.team_rank_x;
+  case VX_CSR_TEAM_SIZE:  return (cooperative_ctx_.team_size_y << 16) | cooperative_ctx_.team_size_x;
+  case VX_CSR_TEAM_TILE_ROWS: return cooperative_ctx_.tile_rows;
+  case VX_CSR_TEAM_GLOBAL_STRIDE: return cooperative_ctx_.global_stride;
+  case VX_CSR_TEAM_SRC_OFFSET: return cooperative_ctx_.src_offset[0];
+  case VX_CSR_TEAM_COPY_SIZE: return cooperative_ctx_.copy_size[0];
+  case VX_CSR_TEAM_DST_MASK: return cooperative_ctx_.dst_mask[0];
+  case VX_CSR_TEAM_COPY_MODE: return cooperative_ctx_.copy_mode[0];
+  case VX_CSR_TEAM_GLOBAL_ADDR: return cooperative_ctx_.global_addr[0];
+  case VX_CSR_TEAM_SRC_OFFSET_1: return cooperative_ctx_.src_offset[1];
+  case VX_CSR_TEAM_COPY_SIZE_1: return cooperative_ctx_.copy_size[1];
+  case VX_CSR_TEAM_DST_MASK_1: return cooperative_ctx_.dst_mask[1];
+  case VX_CSR_TEAM_COPY_MODE_1: return cooperative_ctx_.copy_mode[1];
+  case VX_CSR_TEAM_GLOBAL_ADDR_1: return cooperative_ctx_.global_addr[1];
   case VX_CSR_MSCRATCH:   return csr_mscratch_;
 
   CSR_READ_64(VX_CSR_MCYCLE, core_perf.cycles);
@@ -629,6 +682,53 @@ void Emulator::set_csr(uint32_t addr, Word value, uint32_t wid, uint32_t tid) {
     break;
   case VX_CSR_MSCRATCH:
     csr_mscratch_ = value;
+    break;
+  case VX_CSR_TEAM_ID:
+    cooperative_ctx_.team_id = value;
+    break;
+  case VX_CSR_TEAM_RANK:
+    cooperative_ctx_.team_rank_x = value & 0xffff;
+    cooperative_ctx_.team_rank_y = (value >> 16) & 0xffff;
+    break;
+  case VX_CSR_TEAM_SIZE:
+    cooperative_ctx_.team_size_x = value & 0xffff;
+    cooperative_ctx_.team_size_y = (value >> 16) & 0xffff;
+    break;
+  case VX_CSR_TEAM_TILE_ROWS:
+    cooperative_ctx_.tile_rows = value;
+    break;
+  case VX_CSR_TEAM_GLOBAL_STRIDE:
+    cooperative_ctx_.global_stride = value;
+    break;
+  case VX_CSR_TEAM_SRC_OFFSET:
+    cooperative_ctx_.src_offset[0] = value;
+    break;
+  case VX_CSR_TEAM_COPY_SIZE:
+    cooperative_ctx_.copy_size[0] = value;
+    break;
+  case VX_CSR_TEAM_DST_MASK:
+    cooperative_ctx_.dst_mask[0] = value;
+    break;
+  case VX_CSR_TEAM_COPY_MODE:
+    cooperative_ctx_.copy_mode[0] = value;
+    break;
+  case VX_CSR_TEAM_GLOBAL_ADDR:
+    cooperative_ctx_.global_addr[0] = value;
+    break;
+  case VX_CSR_TEAM_SRC_OFFSET_1:
+    cooperative_ctx_.src_offset[1] = value;
+    break;
+  case VX_CSR_TEAM_COPY_SIZE_1:
+    cooperative_ctx_.copy_size[1] = value;
+    break;
+  case VX_CSR_TEAM_DST_MASK_1:
+    cooperative_ctx_.dst_mask[1] = value;
+    break;
+  case VX_CSR_TEAM_COPY_MODE_1:
+    cooperative_ctx_.copy_mode[1] = value;
+    break;
+  case VX_CSR_TEAM_GLOBAL_ADDR_1:
+    cooperative_ctx_.global_addr[1] = value;
     break;
   case VX_CSR_SATP:
   #ifdef VM_ENABLE

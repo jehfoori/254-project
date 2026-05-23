@@ -214,5 +214,20 @@
 `define VX_CSR_NUM_WARPS                12'hFC1
 `define VX_CSR_NUM_CORES                12'hFC2
 `define VX_CSR_LOCAL_MEM_BASE           12'hFC3
+`define VX_CSR_TEAM_ID                  12'hFC4
+`define VX_CSR_TEAM_RANK                12'hFC5
+`define VX_CSR_TEAM_SIZE                12'hFC6
+`define VX_CSR_TEAM_SRC_OFFSET          12'hFC7
+`define VX_CSR_TEAM_COPY_SIZE           12'hFC8
+`define VX_CSR_TEAM_DST_MASK            12'hFC9
+`define VX_CSR_TEAM_SRC_OFFSET_1        12'hFCA
+`define VX_CSR_TEAM_COPY_SIZE_1         12'hFCB
+`define VX_CSR_TEAM_DST_MASK_1          12'hFCC
+`define VX_CSR_TEAM_COPY_MODE           12'hFCD
+`define VX_CSR_TEAM_COPY_MODE_1         12'hFCE
+`define VX_CSR_TEAM_GLOBAL_ADDR         12'hFCF
+`define VX_CSR_TEAM_GLOBAL_ADDR_1       12'hFD0
+`define VX_CSR_TEAM_TILE_ROWS           12'hFD1
+`define VX_CSR_TEAM_GLOBAL_STRIDE       12'hFD2
 
 `endif // VX_TYPES_VH

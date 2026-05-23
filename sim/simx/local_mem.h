@@ -31,17 +31,23 @@ public:
   struct PerfStats {
     uint64_t reads;
     uint64_t writes;
+    uint64_t copies;
+    uint64_t copy_bytes;
     uint64_t bank_stalls;
 
     PerfStats()
       : reads(0)
       , writes(0)
+      , copies(0)
+      , copy_bytes(0)
       , bank_stalls(0)
     {}
 
     PerfStats& operator+=(const PerfStats& rhs) {
       this->reads += rhs.reads;
       this->writes += rhs.writes;
+      this->copies += rhs.copies;
+      this->copy_bytes += rhs.copy_bytes;
       this->bank_stalls += rhs.bank_stalls;
       return *this;
     }
@@ -58,6 +64,8 @@ public:
   void read(void* data, uint64_t addr, uint32_t size);
 
   void write(const void* data, uint64_t addr, uint32_t size);
+
+  void copy_from(const LocalMem& src, uint64_t src_addr, uint64_t dst_addr, uint32_t size);
 
   void tick();
 

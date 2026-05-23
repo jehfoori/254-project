@@ -37,6 +37,11 @@ extern dim3_t blockDim;
 
 extern __thread uint32_t __local_group_id;
 extern uint32_t __warps_per_group;
+extern __thread uint32_t __team_id;
+extern __thread uint32_t __team_rank_x;
+extern __thread uint32_t __team_rank_y;
+extern __thread uint32_t __team_size_x;
+extern __thread uint32_t __team_size_y;
 
 typedef void (*vx_kernel_func_cb)(void *arg);
 
@@ -48,12 +53,96 @@ typedef void (*vx_serial_cb)(void *arg);
 #define __syncthreads() \
   vx_barrier(__local_group_id, __warps_per_group)
 
+#define VX_TEAM_BARRIER_ID 0xC0000000u
+#define VX_TEAM_ARRIVE_ID  0xC0000001u
+#define VX_TEAM_WAIT_ID    0xC0000002u
+#define VX_TEAM_COPY_MODE_LOCAL 0u
+#define VX_TEAM_COPY_MODE_GLOBAL 1u
+
+inline uint32_t vx_team_rank() {
+  return __team_rank_y * __team_size_x + __team_rank_x;
+}
+
+inline uint32_t vx_team_size() {
+  return __team_size_x * __team_size_y;
+}
+
+inline void vx_team_set_copy_slot(uint32_t slot, uint32_t src_offset, uint32_t copy_size, uint32_t dst_mask) {
+  if (slot == 0) {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET, src_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK, dst_mask);
+    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_LOCAL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR, 0);
+  } else {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET_1, src_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE_1, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK_1, dst_mask);
+    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_LOCAL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR_1, 0);
+  }
+}
+
+inline void vx_team_set_multicast_shape(uint32_t tile_rows, uint32_t global_stride) {
+  csr_write(VX_CSR_TEAM_TILE_ROWS, tile_rows);
+  csr_write(VX_CSR_TEAM_GLOBAL_STRIDE, global_stride);
+}
+
+inline void vx_team_set_multicast_slot(uint32_t slot,
+                                       uint64_t global_addr,
+                                       uint32_t dst_offset,
+                                       uint32_t copy_size,
+                                       uint32_t dst_mask) {
+  if (slot == 0) {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET, dst_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK, dst_mask);
+    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_GLOBAL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR, global_addr);
+  } else {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET_1, dst_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE_1, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK_1, dst_mask);
+    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_GLOBAL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR_1, global_addr);
+  }
+}
+
+inline void vx_team_set_copy(uint32_t src_offset, uint32_t copy_size, uint32_t dst_mask) {
+  vx_team_set_copy_slot(0, src_offset, copy_size, dst_mask);
+}
+
+inline void vx_team_clear_copy() {
+  vx_team_set_copy_slot(0, 0, 0, 0);
+  vx_team_set_copy_slot(1, 0, 0, 0);
+}
+
+inline void vx_team_barrier() {
+  vx_barrier(VX_TEAM_BARRIER_ID, vx_team_size());
+}
+
+inline void vx_team_arrive() {
+  vx_barrier(VX_TEAM_ARRIVE_ID, vx_team_size());
+}
+
+inline void vx_team_wait() {
+  vx_barrier(VX_TEAM_WAIT_ID, vx_team_size());
+}
+
 // launch a kernel function with a grid of blocks and block of threads
 int vx_spawn_threads(uint32_t dimension,
                      const uint32_t* grid_dim,
                      const uint32_t* block_dim,
                      vx_kernel_func_cb kernel_func,
                      const void* arg);
+
+int vx_spawn_cooperative_groups(uint32_t dimension,
+                                const uint32_t* grid_dim,
+                                const uint32_t* block_dim,
+                                uint32_t team_dim_x,
+                                uint32_t team_dim_y,
+                                vx_kernel_func_cb kernel_func,
+                                const void* arg);
 
 // function call serialization
 void vx_serial(vx_serial_cb callback, const void * arg);

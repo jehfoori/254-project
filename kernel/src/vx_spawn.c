@@ -30,6 +30,11 @@ dim3_t blockDim;
 
 __thread uint32_t __local_group_id;
 uint32_t __warps_per_group;
+__thread uint32_t __team_id;
+__thread uint32_t __team_rank_x;
+__thread uint32_t __team_rank_y;
+__thread uint32_t __team_size_x;
+__thread uint32_t __team_size_y;
 
 typedef struct {
 	vx_kernel_func_cb callback;
@@ -50,6 +55,21 @@ typedef struct {
 	uint32_t warp_batches;
 	uint32_t remaining_warps;
 } wspawn_threads_args_t;
+
+typedef struct {
+  vx_kernel_func_cb callback;
+  const void* arg;
+  uint32_t block_idx_x;
+  uint32_t block_idx_y;
+  uint32_t block_idx_z;
+  uint32_t team_id;
+  uint32_t team_rank_x;
+  uint32_t team_rank_y;
+  uint32_t team_size_x;
+  uint32_t team_size_y;
+  uint32_t warps_per_group;
+  uint32_t remaining_mask;
+} coop_groups_args_t;
 
 static void __attribute__ ((noinline)) process_threads() {
   wspawn_threads_args_t* targs = (wspawn_threads_args_t*)csr_read(VX_CSR_MSCRATCH);
@@ -165,6 +185,48 @@ static void __attribute__ ((noinline)) process_thread_groups_stub() {
   process_thread_groups();
 
   // disable all warps except warp0
+  vx_tmc(0 == vx_warp_id());
+}
+
+static void __attribute__ ((noinline)) process_cooperative_group() {
+  coop_groups_args_t* targs = (coop_groups_args_t*)csr_read(VX_CSR_MSCRATCH);
+
+  uint32_t threads_per_warp = vx_num_threads();
+  uint32_t warp_id = vx_warp_id();
+  uint32_t thread_id = vx_thread_id();
+  uint32_t blockDim_x = blockDim.x;
+  uint32_t blockDim_y = blockDim.y;
+  uint32_t blockDim_xy = blockDim_x * blockDim_y;
+
+  uint32_t local_task_id = warp_id * threads_per_warp + thread_id;
+
+  __local_group_id = 0;
+  __team_id = targs->team_id;
+  __team_rank_x = targs->team_rank_x;
+  __team_rank_y = targs->team_rank_y;
+  __team_size_x = targs->team_size_x;
+  __team_size_y = targs->team_size_y;
+
+  threadIdx.x = local_task_id % blockDim_x;
+  threadIdx.y = (local_task_id / blockDim_x) % blockDim_y;
+  threadIdx.z = local_task_id / blockDim_xy;
+
+  blockIdx.x = targs->block_idx_x;
+  blockIdx.y = targs->block_idx_y;
+  blockIdx.z = targs->block_idx_z;
+
+  (targs->callback)((void*)targs->arg);
+}
+
+static void __attribute__ ((noinline)) process_cooperative_group_stub() {
+  coop_groups_args_t* targs = (coop_groups_args_t*)csr_read(VX_CSR_MSCRATCH);
+  uint32_t warps_per_group = targs->warps_per_group;
+  uint32_t remaining_mask = targs->remaining_mask;
+  uint32_t warp_id = vx_warp_id();
+  uint32_t threads_mask = (warp_id == warps_per_group-1) ? remaining_mask : -1;
+
+  vx_tmc(threads_mask);
+  process_cooperative_group();
   vx_tmc(0 == vx_warp_id());
 }
 
@@ -349,6 +411,124 @@ int vx_spawn_threads(uint32_t dimension,
 
   // wait for spawned warps to complete
   vx_wspawn(1, 0);
+
+  return 0;
+}
+
+int vx_spawn_cooperative_groups(uint32_t dimension,
+                                const uint32_t* grid_dim,
+                                const uint32_t* block_dim,
+                                uint32_t team_dim_x,
+                                uint32_t team_dim_y,
+                                vx_kernel_func_cb kernel_func,
+                                const void* arg) {
+  uint32_t num_groups = 1;
+  uint32_t group_size = 1;
+  for (uint32_t i = 0; i < 3; ++i) {
+    uint32_t gd = (grid_dim && (i < dimension)) ? grid_dim[i] : 1;
+    uint32_t bd = (block_dim && (i < dimension)) ? block_dim[i] : 1;
+    num_groups *= gd;
+    group_size *= bd;
+    gridDim.m[i] = gd;
+    blockDim.m[i] = bd;
+  }
+
+  if (dimension < 2 || team_dim_x == 0 || team_dim_y == 0) {
+    vx_printf("error: invalid cooperative launch shape (%dD, %d x %d)\n",
+              dimension, team_dim_x, team_dim_y);
+    return -1;
+  }
+
+  if ((gridDim.x % team_dim_x) != 0 || (gridDim.y % team_dim_y) != 0) {
+    vx_printf("error: grid dimensions (%d,%d) must be divisible by team dims (%d,%d)\n",
+              gridDim.x, gridDim.y, team_dim_x, team_dim_y);
+    return -1;
+  }
+
+  uint32_t team_size = team_dim_x * team_dim_y;
+  uint32_t num_cores = vx_num_cores();
+  uint32_t num_teams = num_cores / team_size;
+  if (num_teams == 0) {
+    vx_printf("error: insufficient cores (%d) for cooperative team size %d\n",
+              num_cores, team_size);
+    return -1;
+  }
+
+  uint32_t macro_grid_x = gridDim.x / team_dim_x;
+  uint32_t macro_grid_y = gridDim.y / team_dim_y;
+  uint32_t macro_groups = macro_grid_x * macro_grid_y * gridDim.z;
+  uint32_t active_teams = MIN(macro_groups, num_teams);
+  uint32_t active_cores = active_teams * team_size;
+  uint32_t core_id = vx_core_id();
+  uint32_t threads_per_warp = vx_num_threads();
+  uint32_t warps_per_core = vx_num_warps();
+  uint32_t threads_per_core = threads_per_warp * warps_per_core;
+
+  if (threads_per_core < group_size) {
+    vx_printf("error: group_size > threads_per_core (%d,%d)\n", group_size, threads_per_core);
+    return -1;
+  }
+
+  uint32_t warps_per_group = group_size / threads_per_warp;
+  uint32_t remaining_threads = group_size - warps_per_group * threads_per_warp;
+  uint32_t remaining_mask = -1;
+  if (remaining_threads != 0) {
+    remaining_mask = (1 << remaining_threads) - 1;
+    ++warps_per_group;
+  }
+
+  __warps_per_group = warps_per_group;
+
+  if (core_id >= active_cores)
+    return 0;
+
+  uint32_t team_slot = core_id / team_size;
+  uint32_t team_rank = core_id % team_size;
+  uint32_t team_rank_x = team_rank % team_dim_x;
+  uint32_t team_rank_y = team_rank / team_dim_x;
+  uint32_t macro_grid_xy = macro_grid_x * macro_grid_y;
+
+  vx_tmc_one();
+
+  for (uint32_t macro_group = team_slot; macro_group < macro_groups; macro_group += active_teams) {
+    uint32_t macro_block = macro_group % macro_grid_xy;
+    uint32_t block_z = macro_group / macro_grid_xy;
+    uint32_t macro_x = macro_block % macro_grid_x;
+    uint32_t macro_y = macro_block / macro_grid_x;
+
+    blockIdx.x = macro_x * team_dim_x + team_rank_x;
+    blockIdx.y = macro_y * team_dim_y + team_rank_y;
+    blockIdx.z = block_z;
+
+    coop_groups_args_t coop_args = {
+      kernel_func,
+      arg,
+      blockIdx.x,
+      blockIdx.y,
+      blockIdx.z,
+      macro_group,
+      team_rank_x,
+      team_rank_y,
+      team_dim_x,
+      team_dim_y,
+      warps_per_group,
+      remaining_mask,
+    };
+    csr_write(VX_CSR_MSCRATCH, &coop_args);
+
+    csr_write(VX_CSR_TEAM_ID, macro_group);
+    csr_write(VX_CSR_TEAM_RANK, (team_rank_y << 16) | team_rank_x);
+    csr_write(VX_CSR_TEAM_SIZE, (team_dim_y << 16) | team_dim_x);
+    csr_write(VX_CSR_TEAM_SRC_OFFSET, 0);
+    csr_write(VX_CSR_TEAM_COPY_SIZE, 0);
+    csr_write(VX_CSR_TEAM_DST_MASK, 0);
+
+    vx_wspawn(warps_per_group, process_cooperative_group_stub);
+    process_cooperative_group_stub();
+    vx_wspawn(1, 0);
+  }
+
+  vx_team_clear_copy();
 
   return 0;
 }
