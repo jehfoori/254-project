@@ -86,11 +86,14 @@ struct cooperative_ctx_t {
   uint32_t team_size_y;
   uint32_t tile_rows;
   uint32_t global_stride;
+  bool team_panel_enabled;
   uint32_t copy_mode[kMaxCopies];
   uint64_t global_addr[kMaxCopies];
   uint32_t src_offset[kMaxCopies];
   uint32_t copy_size[kMaxCopies];
   uint32_t dst_mask[kMaxCopies];
+  uint32_t copy_tile_rows[kMaxCopies];
+  uint32_t copy_global_stride[kMaxCopies];
 
   cooperative_ctx_t()
     : team_id(0xffffffff)
@@ -100,6 +103,7 @@ struct cooperative_ctx_t {
     , team_size_y(0)
     , tile_rows(0)
     , global_stride(0)
+    , team_panel_enabled(false)
   {
     for (uint32_t i = 0; i < kMaxCopies; ++i) {
       copy_mode[i] = 0;
@@ -107,6 +111,8 @@ struct cooperative_ctx_t {
       src_offset[i] = 0;
       copy_size[i] = 0;
       dst_mask[i] = 0;
+      copy_tile_rows[i] = 0;
+      copy_global_stride[i] = 0;
     }
   }
 };

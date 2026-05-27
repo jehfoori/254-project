@@ -72,6 +72,8 @@ public:
   void cooperative_barrier(uint32_t core_id);
   void cooperative_arrive(uint32_t core_id);
   void cooperative_wait(uint32_t core_id);
+  bool is_team_panel_addr(uint64_t addr) const;
+  void team_panel_read(uint32_t core_id, void* data, uint64_t addr, uint32_t size);
 
   PerfStats perf_stats() const;
 
@@ -98,15 +100,21 @@ private:
     CoreMask waiters;
     bool transfer_ready;
     uint32_t transfer_cycles;
+    uint32_t transfer_epoch;
+    uint32_t ready_epoch;
     std::vector<uint32_t> participants;
     std::vector<uint32_t> rank_to_core;
     std::vector<CopyDesc> pending_copies;
+    std::vector<uint8_t> panel_store;
+    std::unordered_map<uint32_t, uint32_t> wait_epoch;
 
     TeamState()
       : team_size(0)
       , team_size_x(0)
       , transfer_ready(false)
       , transfer_cycles(0)
+      , transfer_epoch(0)
+      , ready_epoch(0)
     {}
   };
 
@@ -114,6 +122,7 @@ private:
   std::vector<uint8_t> fetch_global_tile(const cooperative_ctx_t& ctx, uint32_t copy_idx) const;
   std::vector<uint8_t> fetch_global_tile(const TeamState::CopyDesc& copy_desc) const;
   TeamState& get_team_state(uint32_t local_core_id, const cooperative_ctx_t& coop);
+  void write_team_panel(TeamState& team, uint32_t panel_offset, const std::vector<uint8_t>& data);
   void execute_pending_copies(TeamState& team);
   void resume_waiters(TeamState& team);
   uint32_t estimate_transfer_cycles(const TeamState& team) const;

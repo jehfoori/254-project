@@ -92,6 +92,8 @@ static void matmul_cpu(float* out, const uint16_t* A, const uint16_t* B, uint32_
 static void show_usage() {
   std::cout << "Vortex cooperative tensor GEMM test.\n";
   std::cout << "Usage: [-f kernel] [-m rows] [-n cols] [-k inner] [-c 0|1] [-h]\n";
+  std::cout << "  -c 0: shared-panel async\n";
+  std::cout << "  -c 1: oracle shared-panel async\n";
 }
 
 static void parse_args(int argc, char** argv) {
@@ -125,12 +127,12 @@ static void parse_args(int argc, char** argv) {
 
 static void cleanup() {
   if (device) {
-    vx_mem_free(A_buffer);
-    vx_mem_free(B_buffer);
-    vx_mem_free(C_buffer);
-    vx_mem_free(stats_buffer);
-    vx_mem_free(krnl_buffer);
-    vx_mem_free(args_buffer);
+    if (A_buffer) vx_mem_free(A_buffer);
+    if (B_buffer) vx_mem_free(B_buffer);
+    if (C_buffer) vx_mem_free(C_buffer);
+    if (stats_buffer) vx_mem_free(stats_buffer);
+    if (krnl_buffer) vx_mem_free(krnl_buffer);
+    if (args_buffer) vx_mem_free(args_buffer);
     vx_dev_close(device);
   }
 }
@@ -171,12 +173,7 @@ int main(int argc, char* argv[]) {
   uint32_t N = xn;
   uint32_t K = xk;
   if (mode > 1) {
-    std::cout << "Error: copy mode must be 0 (sync) or 1 (async)" << std::endl;
-    cleanup();
-    return -1;
-  }
-  if (N != K) {
-    std::cout << "Error: this MVP requires N == K so one multicast stride works for A and B" << std::endl;
+    std::cout << "Error: copy mode must be 0 (shared-panel async) or 1 (oracle shared-panel async)" << std::endl;
     cleanup();
     return -1;
   }
@@ -185,9 +182,19 @@ int main(int argc, char* argv[]) {
     cleanup();
     return -1;
   }
+  if ((N % (cfg::tileN * COOP_N_TILES)) != 0) {
+    std::cout << "Error: N must be divisible by tileN * COOP_N_TILES" << std::endl;
+    cleanup();
+    return -1;
+  }
+  if ((M % (cfg::tileM * COOP_M_TILES)) != 0) {
+    std::cout << "Error: M must be divisible by tileM * COOP_M_TILES" << std::endl;
+    cleanup();
+    return -1;
+  }
 
-  uint32_t grid_x = N / cfg::tileN;
-  uint32_t grid_y = M / cfg::tileM;
+  uint32_t grid_x = N / (cfg::tileN * COOP_N_TILES);
+  uint32_t grid_y = M / (cfg::tileM * COOP_M_TILES);
   if ((grid_x % 2) != 0 || (grid_y % 2) != 0) {
     std::cout << "Error: grid dimensions must be divisible by 2 for 2x2 cooperative teams" << std::endl;
     cleanup();
@@ -198,8 +205,27 @@ int main(int argc, char* argv[]) {
   size_t sizeB = K * N;
   size_t sizeC = M * N;
   uint32_t block_count = grid_x * grid_y;
+#if COOP_PROFILE_STATS
   uint32_t stats_buf_size = block_count * sizeof(block_stats_t);
-  uint32_t local_mem = (mode == 0 ? 1u : 2u) * (cfg::tileM * cfg::tileK + cfg::tileK * cfg::tileN) * sizeof(itype_t);
+#endif
+  uint32_t local_mem = 0;
+  uint32_t num_k_tiles = K / cfg::tileK;
+  uint32_t num_k_panels = (num_k_tiles + PANEL_K_TILES - 1) / PANEL_K_TILES;
+  constexpr uint32_t team_panel_window = 0x10000;
+  uint32_t a_panel_bytes = PANEL_K_TILES * cfg::tileM * cfg::tileK * COOP_M_TILES * sizeof(itype_t);
+  uint32_t b_panel_bytes = PANEL_K_TILES * cfg::tileK * cfg::tileN * COOP_N_TILES * sizeof(itype_t);
+  uint32_t panel_slot_bytes = 2 * a_panel_bytes + 2 * b_panel_bytes;
+  uint32_t active_panel_slots = (num_k_panels > 1) ? 2 : 1;
+  uint32_t required_panel_bytes = active_panel_slots * panel_slot_bytes;
+  if (required_panel_bytes > team_panel_window) {
+    std::cout << "Error: panel store window too small: needed=" << required_panel_bytes
+              << ", available=" << team_panel_window
+              << " (PANEL_K_TILES=" << PANEL_K_TILES
+              << ", COOP_N_TILES=" << COOP_N_TILES
+              << ", active_slots=" << active_panel_slots << ")" << std::endl;
+    cleanup();
+    return -1;
+  }
 
   kernel_arg.grid_dim[0] = grid_x;
   kernel_arg.grid_dim[1] = grid_y;
@@ -219,7 +245,11 @@ int main(int argc, char* argv[]) {
   std::cout << "matrix A: " << M << "x" << K << std::endl;
   std::cout << "matrix B: " << K << "x" << N << std::endl;
   std::cout << "matrix C: " << M << "x" << N << std::endl;
-  std::cout << "copy mode: " << (mode == 0 ? "global-sync" : "global-async") << std::endl;
+  std::cout << "panel K tiles: " << PANEL_K_TILES << std::endl;
+  std::cout << "cooperative M tiles: " << COOP_M_TILES << std::endl;
+  std::cout << "cooperative N tiles: " << COOP_N_TILES << std::endl;
+  std::cout << "profile stats: " << (COOP_PROFILE_STATS ? "on" : "off") << std::endl;
+  std::cout << "copy mode: " << (mode == 0 ? "shared-panel-async" : "oracle-panel-async") << std::endl;
   std::cout << "local memory: " << local_mem << " bytes" << std::endl;
 
   uint32_t max_localmem = 0;
@@ -239,13 +269,15 @@ int main(int argc, char* argv[]) {
   RT_CHECK(vx_mem_address(B_buffer, &kernel_arg.B_addr));
   RT_CHECK(vx_mem_alloc(device, sizeC * sizeof(otype_t), VX_MEM_WRITE, &C_buffer));
   RT_CHECK(vx_mem_address(C_buffer, &kernel_arg.C_addr));
+#if COOP_PROFILE_STATS
   RT_CHECK(vx_mem_alloc(device, stats_buf_size, VX_MEM_WRITE, &stats_buffer));
   RT_CHECK(vx_mem_address(stats_buffer, &kernel_arg.stats_addr));
+#endif
 
   std::vector<itype_t> h_A(sizeA);
   std::vector<itype_t> h_B(sizeB);
   std::vector<otype_t> h_C(sizeC);
-  std::vector<block_stats_t> h_stats(block_count);
+  std::vector<block_stats_t> h_stats(COOP_PROFILE_STATS ? block_count : 0);
   std::vector<float> h_ref(sizeC);
 
   for (uint32_t i = 0; i < sizeA; ++i) {
@@ -276,8 +308,10 @@ int main(int argc, char* argv[]) {
 
   std::cout << "download destination buffer" << std::endl;
   RT_CHECK(vx_copy_from_dev(h_C.data(), C_buffer, 0, sizeC * sizeof(otype_t)));
+#if COOP_PROFILE_STATS
   std::cout << "download stats buffer" << std::endl;
   RT_CHECK(vx_copy_from_dev(h_stats.data(), stats_buffer, 0, stats_buf_size));
+#endif
 
   std::cout << "verify result" << std::endl;
   matmul_cpu(h_ref.data(), h_A.data(), h_B.data(), M, N, K);
@@ -289,10 +323,23 @@ int main(int argc, char* argv[]) {
     }
   }
 
+#if COOP_PROFILE_STATS
   uint32_t macro_grid_x = grid_x / 2;
-  uint32_t num_k_tiles = K / cfg::tileK;
   uint32_t total_a_tile_loads = 0;
   uint32_t total_b_tile_loads = 0;
+  uint32_t total_team_barriers = 0;
+  uint32_t total_team_arrives = 0;
+  uint32_t total_team_waits = 0;
+  uint32_t total_transfer_events = 0;
+  uint32_t total_global_bytes = 0;
+  uint32_t total_fanout_bytes = 0;
+  uint32_t total_panel_write_bytes = 0;
+  uint32_t total_panel_read_bytes = 0;
+  uint32_t total_panel_transfers = 0;
+  uint32_t total_mma_steps = 0;
+  uint32_t total_partial_panels = 0;
+  uint32_t total_slot_reuse_barriers = 0;
+  uint32_t has_partial_panel = ((num_k_tiles % PANEL_K_TILES) != 0) ? 1 : 0;
   for (uint32_t by = 0; by < grid_y; ++by) {
     for (uint32_t bx = 0; bx < grid_x; ++bx) {
       uint32_t idx = bx + by * grid_x;
@@ -300,10 +347,26 @@ int main(int argc, char* argv[]) {
       uint32_t expected_team_id = (bx / 2) + (by / 2) * macro_grid_x;
       uint32_t expected_rank_x = bx % 2;
       uint32_t expected_rank_y = by % 2;
-      uint32_t expected_a_loads = (expected_rank_x == 0) ? num_k_tiles : 0;
-      uint32_t expected_b_loads = (expected_rank_y == 0) ? num_k_tiles : 0;
-      uint32_t expected_barriers = (mode == 0) ? num_k_tiles : 1;
-      uint32_t expected_arrives = (mode == 0 || num_k_tiles == 0) ? 0 : (num_k_tiles - 1);
+      uint32_t expected_a_loads = (expected_rank_x == 0) ? (num_k_tiles * COOP_M_TILES) : 0;
+      uint32_t expected_b_loads = (expected_rank_y == 0) ? (num_k_tiles * COOP_N_TILES) : 0;
+      uint32_t expected_transfer_events = 0;
+      expected_transfer_events += (expected_rank_x == 0) ? num_k_panels : 0;
+      expected_transfer_events += (expected_rank_y == 0) ? num_k_panels : 0;
+      uint32_t expected_global_bytes = (expected_a_loads * cfg::tileM * cfg::tileK
+                                      + expected_b_loads * cfg::tileK * cfg::tileN) * sizeof(itype_t);
+      uint32_t expected_fanout_bytes = 0;
+      uint32_t expected_panel_write_bytes = expected_global_bytes;
+      uint32_t expected_panel_read_bytes = num_k_tiles
+                                         * (COOP_M_TILES * cfg::tileM * cfg::tileK
+                                          + COOP_N_TILES * cfg::tileK * cfg::tileN)
+                                         * sizeof(itype_t);
+      uint32_t expected_panel_transfers = expected_transfer_events;
+      uint32_t expected_mma_steps = num_k_tiles * COOP_M_TILES * COOP_N_TILES;
+      uint32_t expected_partial_panels = has_partial_panel;
+      uint32_t sync_steps = num_k_panels;
+      uint32_t expected_arrives = (sync_steps == 0) ? 0 : (sync_steps - 1);
+      uint32_t reuse_barriers = (num_k_panels > 2) ? (num_k_panels - 2) : 0;
+      uint32_t expected_barriers = (sync_steps == 0) ? 0 : 1 + reuse_barriers;
       uint32_t expected_waits = expected_arrives;
       if (stats.team_id != expected_team_id
        || stats.team_rank_x != expected_rank_x
@@ -312,7 +375,16 @@ int main(int argc, char* argv[]) {
        || stats.b_tile_loads != expected_b_loads
        || stats.team_barriers != expected_barriers
        || stats.team_arrives != expected_arrives
-       || stats.team_waits != expected_waits) {
+       || stats.team_waits != expected_waits
+       || stats.transfer_events != expected_transfer_events
+       || stats.global_bytes != expected_global_bytes
+       || stats.fanout_bytes != expected_fanout_bytes
+       || stats.panel_write_bytes != expected_panel_write_bytes
+       || stats.panel_read_bytes != expected_panel_read_bytes
+       || stats.panel_transfers != expected_panel_transfers
+       || stats.mma_steps != expected_mma_steps
+       || stats.partial_panels != expected_partial_panels
+       || stats.slot_reuse_barriers != reuse_barriers) {
         std::cout << "*** stats error: block (" << bx << ", " << by << ")"
                   << " team_id=" << stats.team_id
                   << " rank=(" << stats.team_rank_x << ", " << stats.team_rank_y << ")"
@@ -321,24 +393,75 @@ int main(int argc, char* argv[]) {
                   << " barriers=" << stats.team_barriers
                   << " arrives=" << stats.team_arrives
                   << " waits=" << stats.team_waits
+                  << " transfers=" << stats.transfer_events
+                  << " global_bytes=" << stats.global_bytes
+                  << " fanout_bytes=" << stats.fanout_bytes
+                  << " panel_write_bytes=" << stats.panel_write_bytes
+                  << " panel_read_bytes=" << stats.panel_read_bytes
+                  << " panel_transfers=" << stats.panel_transfers
+                  << " mma_steps=" << stats.mma_steps
+                  << " partial_panels=" << stats.partial_panels
+                  << " slot_reuse_barriers=" << stats.slot_reuse_barriers
                   << std::endl;
         ++errors;
       }
       total_a_tile_loads += stats.a_tile_loads;
       total_b_tile_loads += stats.b_tile_loads;
+      total_team_barriers += stats.team_barriers;
+      total_team_arrives += stats.team_arrives;
+      total_team_waits += stats.team_waits;
+      total_transfer_events += stats.transfer_events;
+      total_global_bytes += stats.global_bytes;
+      total_fanout_bytes += stats.fanout_bytes;
+      total_panel_write_bytes += stats.panel_write_bytes;
+      total_panel_read_bytes += stats.panel_read_bytes;
+      total_panel_transfers += stats.panel_transfers;
+      total_mma_steps += stats.mma_steps;
+      total_partial_panels += stats.partial_panels;
+      total_slot_reuse_barriers += stats.slot_reuse_barriers;
     }
   }
 
   uint32_t cooperative_tile_loads = total_a_tile_loads + total_b_tile_loads;
-  uint32_t baseline_tile_loads = block_count * num_k_tiles * 2;
+  uint32_t baseline_tile_loads = block_count * num_k_tiles * COOP_M_TILES * COOP_N_TILES * 2;
   std::cout << "cooperative tile loads: " << cooperative_tile_loads
             << " (A=" << total_a_tile_loads
             << ", B=" << total_b_tile_loads << ")" << std::endl;
   std::cout << "baseline tile loads: " << baseline_tile_loads << std::endl;
-  if (cooperative_tile_loads * 2 != baseline_tile_loads) {
-    std::cout << "*** load reduction check failed" << std::endl;
-    ++errors;
+  std::cout << "team barriers: " << total_team_barriers << std::endl;
+  std::cout << "team arrives: " << total_team_arrives << std::endl;
+  std::cout << "team waits: " << total_team_waits << std::endl;
+  std::cout << "slot reuse barriers: " << total_slot_reuse_barriers << std::endl;
+  std::cout << "transfer events: " << total_transfer_events << std::endl;
+  std::cout << "global transfer bytes: " << total_global_bytes << std::endl;
+  std::cout << "fanout write bytes: " << total_fanout_bytes << std::endl;
+  std::cout << "panel write bytes: " << total_panel_write_bytes << std::endl;
+  std::cout << "panel read bytes: " << total_panel_read_bytes << std::endl;
+  std::cout << "panel transfers: " << total_panel_transfers << std::endl;
+  std::cout << "mma steps: " << total_mma_steps << std::endl;
+  std::cout << "partial panels: " << total_partial_panels << std::endl;
+  if (total_transfer_events != 0) {
+    std::cout << "mma steps per transfer event: "
+              << double(total_mma_steps) / double(total_transfer_events) << std::endl;
   }
+  if (total_team_barriers != 0) {
+    std::cout << "mma steps per team barrier: "
+              << double(total_mma_steps) / double(total_team_barriers) << std::endl;
+  }
+  uint32_t total_team_sync_events = total_team_barriers + total_team_arrives + total_team_waits;
+  if (total_team_sync_events != 0) {
+    std::cout << "mma steps per team sync event: "
+              << double(total_mma_steps) / double(total_team_sync_events) << std::endl;
+  }
+  if (cooperative_tile_loads == 0) {
+    std::cout << "*** load reduction check failed: no cooperative loads recorded" << std::endl;
+    ++errors;
+  } else {
+    std::cout << "tile load reduction: "
+              << double(baseline_tile_loads) / double(cooperative_tile_loads)
+              << "x" << std::endl;
+  }
+#endif
 
   std::cout << "cleanup" << std::endl;
   cleanup();

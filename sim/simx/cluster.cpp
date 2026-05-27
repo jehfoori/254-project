@@ -18,6 +18,14 @@
 using namespace vortex;
 
 static constexpr uint32_t kGlobalMulticastMode = 1;
+static constexpr uint32_t kTeamPanelMode = 2;
+static constexpr uint32_t kTeamPanelOracleMode = 3;
+static constexpr uint32_t kTeamPanelOffset = 0x2000;
+static constexpr uint32_t kTeamPanelWindow = 0x10000;
+
+static bool is_panel_mode(uint32_t copy_mode) {
+  return copy_mode == kTeamPanelMode || copy_mode == kTeamPanelOracleMode;
+}
 
 Cluster::Cluster(const SimContext& ctx,
                  uint32_t cluster_id,
@@ -99,6 +107,7 @@ void Cluster::tick() {
     --team.transfer_cycles;
     if (team.transfer_cycles == 0) {
       execute_pending_copies(team);
+      team.ready_epoch = team.transfer_epoch;
       team.transfer_ready = true;
       resume_waiters(team);
     }
@@ -195,6 +204,7 @@ void Cluster::cooperative_barrier(uint32_t core_id) {
   team.waiters.reset();
   team.transfer_ready = false;
   team.transfer_cycles = 0;
+  team.ready_epoch = team.transfer_epoch;
   team.pending_copies.clear();
 }
 
@@ -208,10 +218,8 @@ void Cluster::cooperative_arrive(uint32_t core_id) {
   auto& coop = core->emulator().cooperative_ctx();
   auto& team = get_team_state(local_core_id, coop);
 
-  if (!team.arrived.any()) {
+  if (!team.arrived.any())
     assert(team.transfer_cycles == 0);
-    team.transfer_ready = false;
-  }
 
   team.arrived.set(local_core_id);
   DP(3, "*** Arrive core #" << core_id << " in cooperative team #" << coop.team_id);
@@ -222,6 +230,7 @@ void Cluster::cooperative_arrive(uint32_t core_id) {
   assert(team.transfer_cycles == 0);
   team.transfer_ready = false;
   team.pending_copies.clear();
+  ++team.transfer_epoch;
 
   for (auto src_core_id : team.participants) {
     auto* src_core = this->get_core(src_core_id);
@@ -236,15 +245,23 @@ void Cluster::cooperative_arrive(uint32_t core_id) {
         src_ctx.src_offset[copy_idx],
         src_ctx.copy_size[copy_idx],
         src_ctx.dst_mask[copy_idx],
-        src_ctx.tile_rows,
-        src_ctx.global_stride,
+        src_ctx.copy_tile_rows[copy_idx],
+        src_ctx.copy_global_stride[copy_idx],
         src_core_id,
       });
     }
     src_core->emulator().clear_cooperative_copy();
   }
 
+  for (auto local_id : team.participants) {
+    team.wait_epoch[local_id] = team.transfer_epoch;
+  }
   team.transfer_cycles = estimate_transfer_cycles(team);
+  if (team.transfer_cycles == 0) {
+    execute_pending_copies(team);
+    team.ready_epoch = team.transfer_epoch;
+    team.transfer_ready = true;
+  }
   team.arrived.reset();
 }
 
@@ -258,7 +275,8 @@ void Cluster::cooperative_wait(uint32_t core_id) {
   auto& coop = core->emulator().cooperative_ctx();
   auto& team = get_team_state(local_core_id, coop);
 
-  if (team.transfer_ready) {
+  auto target_epoch = team.wait_epoch[local_core_id];
+  if (target_epoch == 0 || team.ready_epoch >= target_epoch) {
     uint32_t socket_id = local_core_id / cores_per_socket;
     uint32_t socket_core_id = local_core_id % cores_per_socket;
     sockets_.at(socket_id)->resume(socket_core_id);
@@ -267,6 +285,28 @@ void Cluster::cooperative_wait(uint32_t core_id) {
 
   team.waiters.set(local_core_id);
   DP(3, "*** Wait core #" << core_id << " in cooperative team #" << coop.team_id);
+}
+
+bool Cluster::is_team_panel_addr(uint64_t addr) const {
+  auto local_offset = addr - uint64_t(LMEM_BASE_ADDR);
+  return addr >= uint64_t(LMEM_BASE_ADDR)
+      && local_offset >= kTeamPanelOffset
+      && local_offset < (kTeamPanelOffset + kTeamPanelWindow);
+}
+
+void Cluster::team_panel_read(uint32_t core_id, void* data, uint64_t addr, uint32_t size) {
+  auto sockets_per_cluster = sockets_.size();
+  auto cores_per_socket = cores_per_socket_;
+  uint32_t cores_per_cluster = sockets_per_cluster * cores_per_socket;
+  uint32_t local_core_id = core_id % cores_per_cluster;
+
+  auto* core = this->get_core(local_core_id);
+  auto& coop = core->emulator().cooperative_ctx();
+  auto& team = get_team_state(local_core_id, coop);
+
+  uint32_t panel_offset = addr - uint64_t(LMEM_BASE_ADDR) - kTeamPanelOffset;
+  assert(panel_offset + size <= team.panel_store.size());
+  std::memcpy(data, team.panel_store.data() + panel_offset, size);
 }
 
 Core* Cluster::get_core(uint32_t local_core_id) const {
@@ -283,25 +323,25 @@ Cluster::PerfStats Cluster::perf_stats() const {
 
 std::vector<uint8_t> Cluster::fetch_global_tile(const cooperative_ctx_t& ctx, uint32_t copy_idx) const {
   assert(ram_ != nullptr);
-  assert(ctx.tile_rows != 0);
-  assert(ctx.global_stride != 0);
-  assert((ctx.copy_size[copy_idx] % ctx.tile_rows) == 0);
+  assert(ctx.copy_tile_rows[copy_idx] != 0);
+  assert(ctx.copy_global_stride[copy_idx] != 0);
+  assert((ctx.copy_size[copy_idx] % ctx.copy_tile_rows[copy_idx]) == 0);
 
   uint32_t packed_bytes = ctx.copy_size[copy_idx];
-  uint32_t row_bytes = packed_bytes / ctx.tile_rows;
-  uint64_t span_bytes = uint64_t(ctx.tile_rows - 1) * ctx.global_stride + row_bytes;
+  uint32_t row_bytes = packed_bytes / ctx.copy_tile_rows[copy_idx];
+  uint64_t span_bytes = uint64_t(ctx.copy_tile_rows[copy_idx] - 1) * ctx.copy_global_stride[copy_idx] + row_bytes;
 
   std::vector<uint8_t> packed_buffer(packed_bytes);
-  if (row_bytes == ctx.global_stride) {
+  if (row_bytes == ctx.copy_global_stride[copy_idx]) {
     ram_->read(packed_buffer.data(), ctx.global_addr[copy_idx], packed_bytes);
     return packed_buffer;
   }
 
   std::vector<uint8_t> span_buffer(span_bytes);
   ram_->read(span_buffer.data(), ctx.global_addr[copy_idx], span_bytes);
-  for (uint32_t row = 0; row < ctx.tile_rows; ++row) {
+  for (uint32_t row = 0; row < ctx.copy_tile_rows[copy_idx]; ++row) {
     std::memcpy(packed_buffer.data() + row * row_bytes,
-                span_buffer.data() + row * ctx.global_stride,
+                span_buffer.data() + row * ctx.copy_global_stride[copy_idx],
                 row_bytes);
   }
   return packed_buffer;
@@ -355,6 +395,14 @@ Cluster::TeamState& Cluster::get_team_state(uint32_t local_core_id, const cooper
   return team;
 }
 
+void Cluster::write_team_panel(TeamState& team, uint32_t panel_offset, const std::vector<uint8_t>& data) {
+  auto end_offset = panel_offset + data.size();
+  if (team.panel_store.size() < end_offset) {
+    team.panel_store.resize(end_offset);
+  }
+  std::memcpy(team.panel_store.data() + panel_offset, data.data(), data.size());
+}
+
 void Cluster::execute_pending_copies(TeamState& team) {
   for (auto src_core_id : team.participants) {
     auto* src_core = this->get_core(src_core_id);
@@ -366,6 +414,10 @@ void Cluster::execute_pending_copies(TeamState& team) {
       std::vector<uint8_t> multicast_buffer;
       if (src_ctx.copy_mode[copy_idx] == kGlobalMulticastMode) {
         multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
+      } else if (is_panel_mode(src_ctx.copy_mode[copy_idx])) {
+        multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
+        write_team_panel(team, src_ctx.src_offset[copy_idx], multicast_buffer);
+        continue;
       }
 
       for (uint32_t dst_rank = 0; dst_rank < team.team_size; ++dst_rank) {
@@ -392,6 +444,10 @@ void Cluster::execute_pending_copies(TeamState& team) {
     std::vector<uint8_t> multicast_buffer;
     if (copy_desc.copy_mode == kGlobalMulticastMode) {
       multicast_buffer = fetch_global_tile(copy_desc);
+    } else if (is_panel_mode(copy_desc.copy_mode)) {
+      multicast_buffer = fetch_global_tile(copy_desc);
+      write_team_panel(team, copy_desc.src_offset, multicast_buffer);
+      continue;
     }
 
     for (uint32_t dst_rank = 0; dst_rank < team.team_size; ++dst_rank) {
@@ -422,19 +478,28 @@ void Cluster::resume_waiters(TeamState& team) {
   for (auto local_id : team.participants) {
     if (!team.waiters.test(local_id))
       continue;
+    if (team.ready_epoch < team.wait_epoch[local_id])
+      continue;
     uint32_t socket_id = local_id / cores_per_socket;
     uint32_t socket_core_id = local_id % cores_per_socket;
     sockets_.at(socket_id)->resume(socket_core_id);
+    team.waiters.reset(local_id);
   }
-  team.waiters.reset();
 }
 
 uint32_t Cluster::estimate_transfer_cycles(const TeamState& team) const {
   uint32_t source_bytes = 0;
   uint32_t fanout_bytes = 0;
   for (const auto& copy_desc : team.pending_copies) {
+    if (copy_desc.copy_mode == kTeamPanelOracleMode) {
+      continue;
+    }
     source_bytes += copy_desc.copy_size;
-    fanout_bytes += copy_desc.copy_size * std::max<uint32_t>(1, __builtin_popcount(copy_desc.dst_mask));
+    if (copy_desc.copy_mode == kTeamPanelMode) {
+      fanout_bytes += copy_desc.copy_size;
+    } else {
+      fanout_bytes += copy_desc.copy_size * std::max<uint32_t>(1, __builtin_popcount(copy_desc.dst_mask));
+    }
   }
   uint32_t cycles = (source_bytes + 15) / 16 + (fanout_bytes + 31) / 32;
   return std::max<uint32_t>(1, cycles);

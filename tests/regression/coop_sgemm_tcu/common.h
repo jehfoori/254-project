@@ -15,6 +15,26 @@
 #define OTYPE fp32
 #endif
 
+#ifndef PANEL_K_TILES
+#define PANEL_K_TILES 1
+#endif
+
+#ifndef COOP_N_TILES
+#define COOP_N_TILES 1
+#endif
+
+#ifndef COOP_M_TILES
+#define COOP_M_TILES 1
+#endif
+
+#ifndef COOP_PROFILE_STATS
+#define COOP_PROFILE_STATS 1
+#endif
+
+#ifndef COOP_DIAG_SERIAL_N2
+#define COOP_DIAG_SERIAL_N2 0
+#endif
+
 typedef struct {
   uint32_t team_id;
   uint32_t team_rank_x;
@@ -24,6 +44,15 @@ typedef struct {
   uint32_t team_barriers;
   uint32_t team_arrives;
   uint32_t team_waits;
+  uint32_t transfer_events;
+  uint32_t global_bytes;
+  uint32_t fanout_bytes;
+  uint32_t panel_write_bytes;
+  uint32_t panel_read_bytes;
+  uint32_t panel_transfers;
+  uint32_t mma_steps;
+  uint32_t partial_panels;
+  uint32_t slot_reuse_barriers;
 } block_stats_t;
 
 typedef struct {

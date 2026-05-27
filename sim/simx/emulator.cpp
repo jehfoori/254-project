@@ -34,6 +34,12 @@ using namespace vortex;
 static constexpr uint32_t kCooperativeBarrierId = 0xC0000000u;
 static constexpr uint32_t kCooperativeArriveId  = 0xC0000001u;
 static constexpr uint32_t kCooperativeWaitId    = 0xC0000002u;
+static constexpr uint32_t kTeamPanelMode        = 2u;
+static constexpr uint32_t kTeamPanelOracleMode  = 3u;
+
+static bool is_team_panel_mode(uint32_t mode) {
+  return mode == kTeamPanelMode || mode == kTeamPanelOracleMode;
+}
 
 warp_t::warp_t(uint32_t num_threads)
   : ireg_file(MAX_NUM_REGS, std::vector<Word>(num_threads))
@@ -284,6 +290,8 @@ void Emulator::clear_cooperative_copy() {
     cooperative_ctx_.src_offset[i] = 0;
     cooperative_ctx_.copy_size[i] = 0;
     cooperative_ctx_.dst_mask[i] = 0;
+    cooperative_ctx_.copy_tile_rows[i] = 0;
+    cooperative_ctx_.copy_global_stride[i] = 0;
   }
 }
 
@@ -397,6 +405,12 @@ void Emulator::set_satp(uint64_t satp) {
 #ifdef VM_ENABLE
 void Emulator::dcache_read(void *data, uint64_t addr, uint32_t size) {
   DP(1, "*** dcache_read 0x" << std::hex << addr << ", size = 0x "  << size);
+  auto* cluster = core_->socket()->cluster();
+  if (cooperative_ctx_.team_panel_enabled && cluster->is_team_panel_addr(addr)) {
+    cluster->team_panel_read(core_->id(), data, addr, size);
+    DPH(2, "Mem Read: addr=0x" << std::hex << addr << ", data=0x" << ByteStream(data, size) << " (size=" << size << ", type=TeamPanel)" << std::endl);
+    return;
+  }
   auto type = get_addr_type(addr);
   if (type == AddrType::Shared) {
     core_->local_mem()->read(data, addr, size);
@@ -415,6 +429,12 @@ void Emulator::dcache_read(void *data, uint64_t addr, uint32_t size) {
 }
 #else
 void Emulator::dcache_read(void *data, uint64_t addr, uint32_t size) {
+  auto* cluster = core_->socket()->cluster();
+  if (cooperative_ctx_.team_panel_enabled && cluster->is_team_panel_addr(addr)) {
+    cluster->team_panel_read(core_->id(), data, addr, size);
+    DPH(2, "Mem Read: addr=0x" << std::hex << addr << ", data=0x" << ByteStream(data, size) << std::dec << " (size=" << size << ", type=TeamPanel)" << std::endl);
+    return;
+  }
   auto type = get_addr_type(addr);
   if (type == AddrType::Shared) {
     core_->local_mem()->read(data, addr, size);
@@ -685,6 +705,7 @@ void Emulator::set_csr(uint32_t addr, Word value, uint32_t wid, uint32_t tid) {
     break;
   case VX_CSR_TEAM_ID:
     cooperative_ctx_.team_id = value;
+    cooperative_ctx_.team_panel_enabled = false;
     break;
   case VX_CSR_TEAM_RANK:
     cooperative_ctx_.team_rank_x = value & 0xffff;
@@ -711,6 +732,9 @@ void Emulator::set_csr(uint32_t addr, Word value, uint32_t wid, uint32_t tid) {
     break;
   case VX_CSR_TEAM_COPY_MODE:
     cooperative_ctx_.copy_mode[0] = value;
+    cooperative_ctx_.copy_tile_rows[0] = cooperative_ctx_.tile_rows;
+    cooperative_ctx_.copy_global_stride[0] = cooperative_ctx_.global_stride;
+    cooperative_ctx_.team_panel_enabled |= is_team_panel_mode(value);
     break;
   case VX_CSR_TEAM_GLOBAL_ADDR:
     cooperative_ctx_.global_addr[0] = value;
@@ -726,6 +750,9 @@ void Emulator::set_csr(uint32_t addr, Word value, uint32_t wid, uint32_t tid) {
     break;
   case VX_CSR_TEAM_COPY_MODE_1:
     cooperative_ctx_.copy_mode[1] = value;
+    cooperative_ctx_.copy_tile_rows[1] = cooperative_ctx_.tile_rows;
+    cooperative_ctx_.copy_global_stride[1] = cooperative_ctx_.global_stride;
+    cooperative_ctx_.team_panel_enabled |= is_team_panel_mode(value);
     break;
   case VX_CSR_TEAM_GLOBAL_ADDR_1:
     cooperative_ctx_.global_addr[1] = value;

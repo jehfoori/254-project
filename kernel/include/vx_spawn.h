@@ -58,6 +58,11 @@ typedef void (*vx_serial_cb)(void *arg);
 #define VX_TEAM_WAIT_ID    0xC0000002u
 #define VX_TEAM_COPY_MODE_LOCAL 0u
 #define VX_TEAM_COPY_MODE_GLOBAL 1u
+#define VX_TEAM_COPY_MODE_PANEL 2u
+#define VX_TEAM_COPY_MODE_PANEL_ORACLE 3u
+// SimX reserves this local-memory window for team-shared panel reads.
+#define VX_TEAM_PANEL_OFFSET 0x2000u
+#define VX_TEAM_PANEL_WINDOW 0x10000u
 
 inline uint32_t vx_team_rank() {
   return __team_rank_y * __team_size_x + __team_rank_x;
@@ -88,6 +93,11 @@ inline void vx_team_set_multicast_shape(uint32_t tile_rows, uint32_t global_stri
   csr_write(VX_CSR_TEAM_GLOBAL_STRIDE, global_stride);
 }
 
+inline void vx_team_enable_panel() {
+  csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_PANEL);
+  csr_write(VX_CSR_TEAM_COPY_SIZE, 0);
+}
+
 inline void vx_team_set_multicast_slot(uint32_t slot,
                                        uint64_t global_addr,
                                        uint32_t dst_offset,
@@ -105,6 +115,50 @@ inline void vx_team_set_multicast_slot(uint32_t slot,
     csr_write(VX_CSR_TEAM_DST_MASK_1, dst_mask);
     csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_GLOBAL);
     csr_write(VX_CSR_TEAM_GLOBAL_ADDR_1, global_addr);
+  }
+}
+
+inline void vx_team_set_panel_slot(uint32_t slot,
+                                   uint64_t global_addr,
+                                   uint32_t panel_offset,
+                                   uint32_t copy_size) {
+  if (slot == 0) {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET, panel_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK, 1);
+    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_PANEL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR, global_addr);
+  } else {
+    csr_write(VX_CSR_TEAM_SRC_OFFSET_1, panel_offset);
+    csr_write(VX_CSR_TEAM_COPY_SIZE_1, copy_size);
+    csr_write(VX_CSR_TEAM_DST_MASK_1, 1);
+    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_PANEL);
+    csr_write(VX_CSR_TEAM_GLOBAL_ADDR_1, global_addr);
+  }
+}
+
+inline void vx_team_set_panel_slot_2d(uint32_t slot,
+                                      uint64_t global_addr,
+                                      uint32_t panel_offset,
+                                      uint32_t copy_size,
+                                      uint32_t tile_rows,
+                                      uint32_t global_stride) {
+  vx_team_set_multicast_shape(tile_rows, global_stride);
+  vx_team_set_panel_slot(slot, global_addr, panel_offset, copy_size);
+}
+
+inline void vx_team_set_panel_oracle_slot_2d(uint32_t slot,
+                                             uint64_t global_addr,
+                                             uint32_t panel_offset,
+                                             uint32_t copy_size,
+                                             uint32_t tile_rows,
+                                             uint32_t global_stride) {
+  vx_team_set_multicast_shape(tile_rows, global_stride);
+  vx_team_set_panel_slot(slot, global_addr, panel_offset, copy_size);
+  if (slot == 0) {
+    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_PANEL_ORACLE);
+  } else {
+    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_PANEL_ORACLE);
   }
 }
 
