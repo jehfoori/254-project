@@ -386,9 +386,19 @@ void SfuUnit::tick() {
 			switch  (csr_type) {
 			case CsrType::CSRRW:
 			case CsrType::CSRRS:
-			case CsrType::CSRRC:
+			case CsrType::CSRRC: {
+				if (trace->data) {
+					auto trace_data = std::dynamic_pointer_cast<SfuTraceData>(trace->data);
+					if (trace_data) {
+						delay += trace_data->arg2;
+						if (trace_data->arg2 != 0) {
+							release_warp = false;
+						}
+					}
+				}
 				output.push(trace, 2+delay);
 				break;
+			}
 			default:
 				std::abort();
 			}

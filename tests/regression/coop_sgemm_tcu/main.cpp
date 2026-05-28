@@ -58,6 +58,13 @@ static float fp16_to_float(uint16_t value) {
   return bit_cast<float>(rv_htof_s(value, 0, nullptr));
 }
 
+static uint32_t env_u32(const char* name, uint32_t default_value) {
+  auto value = getenv(name);
+  if (value == nullptr || value[0] == '\0')
+    return default_value;
+  return strtoul(value, nullptr, 0);
+}
+
 static bool compare_fp32(float actual, float expected, uint32_t index, uint32_t errors) {
   union fi_t {
     float f;
@@ -249,6 +256,16 @@ int main(int argc, char* argv[]) {
   std::cout << "cooperative M tiles: " << COOP_M_TILES << std::endl;
   std::cout << "cooperative N tiles: " << COOP_N_TILES << std::endl;
   std::cout << "profile stats: " << (COOP_PROFILE_STATS ? "on" : "off") << std::endl;
+  std::cout << "tensor feed oracle: " << (COOP_TENSOR_FEED_ORACLE ? "on" : "off") << std::endl;
+  if (COOP_TENSOR_FEED_ORACLE) {
+    std::cout << "tensor feed latency model: desc="
+              << env_u32("VORTEX_TEAM_TENSOR_DESC_LATENCY", 0)
+              << ", mma="
+              << env_u32("VORTEX_TEAM_TENSOR_MMA_LATENCY", 0)
+              << ", bytes/cycle="
+              << env_u32("VORTEX_TEAM_TENSOR_BYTES_PER_CYCLE", 0)
+              << std::endl;
+  }
   std::cout << "copy mode: " << (mode == 0 ? "shared-panel-async" : "oracle-panel-async") << std::endl;
   std::cout << "local memory: " << local_mem << " bytes" << std::endl;
 
@@ -459,6 +476,40 @@ int main(int argc, char* argv[]) {
   } else {
     std::cout << "tile load reduction: "
               << double(baseline_tile_loads) / double(cooperative_tile_loads)
+              << "x" << std::endl;
+  }
+#endif
+
+#if COOP_TENSOR_FEED_ORACLE
+  uint64_t tensor_commands = block_count * COOP_M_TILES;
+  uint64_t tensor_mma_steps = tensor_commands * num_k_tiles * COOP_N_TILES;
+  uint64_t tensor_input_bytes = tensor_commands
+                              * (uint64_t(cfg::tileM) * K
+                               + uint64_t(K) * cfg::tileN * COOP_N_TILES)
+                              * sizeof(itype_t);
+  uint64_t tensor_output_bytes = tensor_commands
+                               * uint64_t(cfg::tileM) * cfg::tileN * COOP_N_TILES
+                               * sizeof(otype_t);
+  uint64_t avoided_matrix_loads = tensor_commands * num_k_tiles * (COOP_M_TILES + COOP_N_TILES);
+  uint64_t oracle_cooperative_tile_loads = 0;
+  for (uint32_t by = 0; by < grid_y; ++by) {
+    for (uint32_t bx = 0; bx < grid_x; ++bx) {
+      oracle_cooperative_tile_loads += (bx % 2 == 0) ? (num_k_tiles * COOP_M_TILES) : 0;
+      oracle_cooperative_tile_loads += (by % 2 == 0) ? (num_k_tiles * COOP_N_TILES) : 0;
+    }
+  }
+  uint64_t oracle_baseline_tile_loads = block_count * num_k_tiles * COOP_M_TILES * COOP_N_TILES * 2;
+  std::cout << "tensor feed commands: " << tensor_commands << std::endl;
+  std::cout << "tensor feed mma steps: " << tensor_mma_steps << std::endl;
+  std::cout << "tensor feed input bytes: " << tensor_input_bytes << std::endl;
+  std::cout << "tensor feed output bytes: " << tensor_output_bytes << std::endl;
+  std::cout << "software matrix loads avoided: " << avoided_matrix_loads << std::endl;
+  std::cout << "software mma steps offloaded: " << tensor_mma_steps << std::endl;
+  std::cout << "cooperative tile loads: " << oracle_cooperative_tile_loads << std::endl;
+  std::cout << "baseline tile loads: " << oracle_baseline_tile_loads << std::endl;
+  if (oracle_cooperative_tile_loads != 0) {
+    std::cout << "tile load reduction: "
+              << double(oracle_baseline_tile_loads) / double(oracle_cooperative_tile_loads)
               << "x" << std::endl;
   }
 #endif

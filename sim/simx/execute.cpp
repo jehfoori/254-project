@@ -1307,7 +1307,9 @@ instr_trace_t* Emulator::execute(const Instr &instr, uint32_t wid) {
       default:
         std::abort();
       }
-      trace->fetch_stall = (csr_addr <= VX_CSR_FCSR);
+      uint32_t csr_latency = this->take_csr_latency();
+      trace->fetch_stall = (csr_addr <= VX_CSR_FCSR) || (csr_latency != 0);
+      trace->data = std::make_shared<SfuTraceData>(csr_addr, csr_latency);
       rd_write = true;
     },
     [&](WctlType wctl_type) {

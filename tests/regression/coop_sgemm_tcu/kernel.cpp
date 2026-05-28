@@ -45,8 +45,8 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   uint32_t tile_row = blockIdx.y * COOP_M_TILES * ctx::tileM;
   uint32_t tile_col = blockIdx.x * n_strip_cols;
 
-#if !COOP_PROFILE_STATS && PANEL_K_TILES == 16 && COOP_M_TILES == 1 && COOP_N_TILES == 2
-  if (!oracle_panel_mode && K == PANEL_K_TILES * ctx::tileK) {
+#if !COOP_PROFILE_STATS && COOP_M_TILES == 1 && COOP_N_TILES == 2
+  if (K == PANEL_K_TILES * ctx::tileK) {
     ctx::fragment_a fragA;
 #if COOP_DIAG_SERIAL_N2
     ctx::fragment_b fragB;
@@ -71,15 +71,25 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
       if (__team_rank_x == 0) {
         uint64_t global_addr = arg->A_addr + sizeof(ctx::input_t) * (tile_row * K);
         uint32_t panel_offset = __team_rank_y * a_panel_bytes;
-        vx_team_set_panel_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
-                                  ctx::tileM, K * sizeof(ctx::input_t));
+        if (oracle_panel_mode) {
+          vx_team_set_panel_oracle_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
+                                           ctx::tileM, K * sizeof(ctx::input_t));
+        } else {
+          vx_team_set_panel_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
+                                    ctx::tileM, K * sizeof(ctx::input_t));
+        }
       }
       if (__team_rank_y == 0) {
         uint32_t slot = (__team_rank_x == 0) ? 1 : 0;
         uint64_t global_addr = arg->B_addr + sizeof(ctx::input_t) * tile_col;
         uint32_t panel_offset = 2 * a_panel_bytes + __team_rank_x * b_panel_bytes;
-        vx_team_set_panel_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
-                                  PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        if (oracle_panel_mode) {
+          vx_team_set_panel_oracle_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
+                                           PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        } else {
+          vx_team_set_panel_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
+                                    PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        }
       }
     }
     __syncthreads();
@@ -89,6 +99,19 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
                                                      + VX_TEAM_PANEL_OFFSET);
     auto panel_A = panel_base + __team_rank_y * a_panel_elems;
     auto panel_B = panel_base + 2 * a_panel_elems + __team_rank_x * b_panel_elems;
+
+#if COOP_TENSOR_FEED_ORACLE
+    if (threadIdx.x == 0) {
+      uint32_t a_panel_offset = __team_rank_y * a_panel_bytes;
+      uint32_t b_panel_offset = 2 * a_panel_bytes + __team_rank_x * b_panel_bytes;
+      uint64_t c_addr = arg->C_addr + sizeof(ctx::output_t) * (tile_row * N + tile_col);
+      vx_team_tensor_mma_panel(a_panel_offset, b_panel_offset, c_addr, N,
+                               PANEL_K_TILES * ctx::tileK, n_strip_cols,
+                               PANEL_K_TILES, COOP_N_TILES);
+    }
+    __syncthreads();
+    return;
+#endif
 
 #if COOP_DIAG_SERIAL_N2
     auto pTileC = pC + tile_row * N + tile_col;
@@ -123,8 +146,8 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   }
 #endif
 
-#if !COOP_PROFILE_STATS && PANEL_K_TILES == 16 && COOP_M_TILES == 1 && COOP_N_TILES == 1
-  if (!oracle_panel_mode && K == PANEL_K_TILES * ctx::tileK) {
+#if !COOP_PROFILE_STATS && COOP_M_TILES == 1 && COOP_N_TILES == 1
+  if (K == PANEL_K_TILES * ctx::tileK) {
     ctx::fragment_a fragA;
     ctx::fragment_b fragB;
     ctx::fragment_acc fragC;
@@ -141,15 +164,25 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
       if (__team_rank_x == 0) {
         uint64_t global_addr = arg->A_addr + sizeof(ctx::input_t) * (tile_row * K);
         uint32_t panel_offset = __team_rank_y * a_panel_bytes;
-        vx_team_set_panel_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
-                                  ctx::tileM, K * sizeof(ctx::input_t));
+        if (oracle_panel_mode) {
+          vx_team_set_panel_oracle_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
+                                           ctx::tileM, K * sizeof(ctx::input_t));
+        } else {
+          vx_team_set_panel_slot_2d(0, global_addr, panel_offset, a_panel_bytes,
+                                    ctx::tileM, K * sizeof(ctx::input_t));
+        }
       }
       if (__team_rank_y == 0) {
         uint32_t slot = (__team_rank_x == 0) ? 1 : 0;
         uint64_t global_addr = arg->B_addr + sizeof(ctx::input_t) * tile_col;
         uint32_t panel_offset = 2 * a_panel_bytes + __team_rank_x * b_panel_bytes;
-        vx_team_set_panel_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
-                                  PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        if (oracle_panel_mode) {
+          vx_team_set_panel_oracle_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
+                                           PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        } else {
+          vx_team_set_panel_slot_2d(slot, global_addr, panel_offset, b_panel_bytes,
+                                    PANEL_K_TILES * ctx::tileK, N * sizeof(ctx::input_t));
+        }
       }
     }
     __syncthreads();
@@ -159,6 +192,19 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
                                                      + VX_TEAM_PANEL_OFFSET);
     auto panel_A = panel_base + __team_rank_y * a_panel_elems;
     auto panel_B = panel_base + 2 * a_panel_elems + __team_rank_x * b_panel_elems;
+
+#if COOP_TENSOR_FEED_ORACLE
+    if (threadIdx.x == 0) {
+      uint32_t a_panel_offset = __team_rank_y * a_panel_bytes;
+      uint32_t b_panel_offset = 2 * a_panel_bytes + __team_rank_x * b_panel_bytes;
+      uint64_t c_addr = arg->C_addr + sizeof(ctx::output_t) * (tile_row * N + tile_col);
+      vx_team_tensor_mma_panel(a_panel_offset, b_panel_offset, c_addr, N,
+                               PANEL_K_TILES * ctx::tileK, n_strip_cols,
+                               PANEL_K_TILES, COOP_N_TILES);
+    }
+    __syncthreads();
+    return;
+#endif
 
     for (uint32_t panel_tile = 0; panel_tile < PANEL_K_TILES; ++panel_tile) {
       auto local_B = panel_B + panel_tile * ctx::tileK * n_strip_cols;
@@ -289,6 +335,7 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     auto panel_A = panel_base + __team_rank_y * a_panel_elems;
     auto panel_B = panel_base + 2 * a_panel_elems + __team_rank_x * b_panel_elems;
     uint32_t panel_a_ldm = panel_tiles * ctx::tileK;
+
     for (uint32_t panel_tile = 0; panel_tile < panel_tiles; ++panel_tile) {
       for (uint32_t n_tile = 0; n_tile < COOP_N_TILES; ++n_tile) {
         auto local_B = panel_B + panel_tile * ctx::tileK * n_strip_cols + n_tile * ctx::tileN;

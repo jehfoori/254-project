@@ -427,6 +427,13 @@ void Core::commit() {
       }
     }
 
+    if (trace->fetch_stall && std::get_if<CsrType>(&trace->op_type) && trace->data) {
+      auto trace_data = std::dynamic_pointer_cast<SfuTraceData>(trace->data);
+      if (trace_data && trace_data->arg2 != 0) {
+        emulator_.resume(trace->wid);
+      }
+    }
+
     // delete the trace
     trace_pool_.deallocate(trace, 1);
 

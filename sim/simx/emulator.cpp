@@ -31,6 +31,31 @@
 
 using namespace vortex;
 
+#ifndef VX_CSR_TEAM_TENSOR_A_OFFSET
+#define VX_CSR_TEAM_TENSOR_A_OFFSET 0xFD4
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_OFFSET
+#define VX_CSR_TEAM_TENSOR_B_OFFSET 0xFD5
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_C_ADDR
+#define VX_CSR_TEAM_TENSOR_C_ADDR 0xFD6
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_C_STRIDE
+#define VX_CSR_TEAM_TENSOR_C_STRIDE 0xFD7
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_A_STRIDE
+#define VX_CSR_TEAM_TENSOR_A_STRIDE 0xFD8
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_STRIDE
+#define VX_CSR_TEAM_TENSOR_B_STRIDE 0xFD9
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_K_TILES
+#define VX_CSR_TEAM_TENSOR_K_TILES 0xFDA
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_RUN
+#define VX_CSR_TEAM_TENSOR_RUN 0xFDB
+#endif
+
 static constexpr uint32_t kCooperativeBarrierId = 0xC0000000u;
 static constexpr uint32_t kCooperativeArriveId  = 0xC0000001u;
 static constexpr uint32_t kCooperativeWaitId    = 0xC0000002u;
@@ -91,6 +116,7 @@ Emulator::Emulator(const Arch &arch, const DCRS &dcrs, Core* core)
     , warps_(arch.num_warps(), arch.num_threads())
     , barriers_(arch.num_barriers(), 0)
     , ipdom_size_(arch.num_threads()-1)
+    , csr_latency_(0)
   #ifdef EXT_TCU_ENABLE
     , tensor_unit_(core->tensor_unit())
   #endif
@@ -134,6 +160,7 @@ void Emulator::reset() {
   stalled_warps_.reset();
   active_warps_.reset();
   cooperative_barrier_.reset();
+  csr_latency_ = 0;
 
   // activate first warp and thread
   active_warps_.set(0);
@@ -573,6 +600,14 @@ Word Emulator::get_csr(uint32_t addr, uint32_t wid, uint32_t tid) {
   case VX_CSR_TEAM_SIZE:  return (cooperative_ctx_.team_size_y << 16) | cooperative_ctx_.team_size_x;
   case VX_CSR_TEAM_TILE_ROWS: return cooperative_ctx_.tile_rows;
   case VX_CSR_TEAM_GLOBAL_STRIDE: return cooperative_ctx_.global_stride;
+  case VX_CSR_TEAM_TENSOR_A_OFFSET: return cooperative_ctx_.tensor_a_offset;
+  case VX_CSR_TEAM_TENSOR_B_OFFSET: return cooperative_ctx_.tensor_b_offset;
+  case VX_CSR_TEAM_TENSOR_C_ADDR: return cooperative_ctx_.tensor_c_addr;
+  case VX_CSR_TEAM_TENSOR_C_STRIDE: return cooperative_ctx_.tensor_c_stride;
+  case VX_CSR_TEAM_TENSOR_A_STRIDE: return cooperative_ctx_.tensor_a_stride;
+  case VX_CSR_TEAM_TENSOR_B_STRIDE: return cooperative_ctx_.tensor_b_stride;
+  case VX_CSR_TEAM_TENSOR_K_TILES: return cooperative_ctx_.tensor_k_tiles;
+  case VX_CSR_TEAM_TENSOR_RUN: return 0;
   case VX_CSR_TEAM_SRC_OFFSET: return cooperative_ctx_.src_offset[0];
   case VX_CSR_TEAM_COPY_SIZE: return cooperative_ctx_.copy_size[0];
   case VX_CSR_TEAM_DST_MASK: return cooperative_ctx_.dst_mask[0];
@@ -720,6 +755,31 @@ void Emulator::set_csr(uint32_t addr, Word value, uint32_t wid, uint32_t tid) {
     break;
   case VX_CSR_TEAM_GLOBAL_STRIDE:
     cooperative_ctx_.global_stride = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_A_OFFSET:
+    cooperative_ctx_.tensor_a_offset = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_B_OFFSET:
+    cooperative_ctx_.tensor_b_offset = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_C_ADDR:
+    cooperative_ctx_.tensor_c_addr = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_C_STRIDE:
+    cooperative_ctx_.tensor_c_stride = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_A_STRIDE:
+    cooperative_ctx_.tensor_a_stride = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_B_STRIDE:
+    cooperative_ctx_.tensor_b_stride = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_K_TILES:
+    cooperative_ctx_.tensor_k_tiles = value;
+    break;
+  case VX_CSR_TEAM_TENSOR_RUN:
+    csr_latency_ = std::max<uint32_t>(csr_latency_,
+      core_->socket()->cluster()->team_tensor_mma(core_->id(), value));
     break;
   case VX_CSR_TEAM_SRC_OFFSET:
     cooperative_ctx_.src_offset[0] = value;

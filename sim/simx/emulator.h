@@ -94,6 +94,13 @@ struct cooperative_ctx_t {
   uint32_t dst_mask[kMaxCopies];
   uint32_t copy_tile_rows[kMaxCopies];
   uint32_t copy_global_stride[kMaxCopies];
+  uint32_t tensor_a_offset;
+  uint32_t tensor_b_offset;
+  uint64_t tensor_c_addr;
+  uint32_t tensor_c_stride;
+  uint32_t tensor_a_stride;
+  uint32_t tensor_b_stride;
+  uint32_t tensor_k_tiles;
 
   cooperative_ctx_t()
     : team_id(0xffffffff)
@@ -104,6 +111,13 @@ struct cooperative_ctx_t {
     , tile_rows(0)
     , global_stride(0)
     , team_panel_enabled(false)
+    , tensor_a_offset(0)
+    , tensor_b_offset(0)
+    , tensor_c_addr(0)
+    , tensor_c_stride(0)
+    , tensor_a_stride(0)
+    , tensor_b_stride(0)
+    , tensor_k_tiles(0)
   {
     for (uint32_t i = 0; i < kMaxCopies; ++i) {
       copy_mode[i] = 0;
@@ -164,6 +178,12 @@ public:
     return cooperative_ctx_;
   }
 
+  uint32_t take_csr_latency() {
+    uint32_t value = csr_latency_;
+    csr_latency_ = 0;
+    return value;
+  }
+
   void clear_cooperative_copy();
 
 private:
@@ -215,6 +235,7 @@ private:
   Word        csr_mscratch_;
   wspawn_t    wspawn_;
   cooperative_ctx_t cooperative_ctx_;
+  uint32_t    csr_latency_;
 
   // PC of the last warp to become inactive, used by the debug module to
   // report the final PC when the program completes.

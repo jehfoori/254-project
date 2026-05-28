@@ -13,7 +13,10 @@
 
 #include "cluster.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <rvfloats.h>
 
 using namespace vortex;
 
@@ -25,6 +28,20 @@ static constexpr uint32_t kTeamPanelWindow = 0x10000;
 
 static bool is_panel_mode(uint32_t copy_mode) {
   return copy_mode == kTeamPanelMode || copy_mode == kTeamPanelOracleMode;
+}
+
+static uint16_t read_u16(const std::vector<uint8_t>& data, uint32_t offset) {
+  assert(offset + sizeof(uint16_t) <= data.size());
+  uint16_t value;
+  std::memcpy(&value, data.data() + offset, sizeof(value));
+  return value;
+}
+
+static uint32_t get_env_u32(const char* name, uint32_t default_value) {
+  auto value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0')
+    return default_value;
+  return std::strtoul(value, nullptr, 0);
 }
 
 Cluster::Cluster(const SimContext& ctx,
@@ -88,7 +105,16 @@ Cluster::Cluster(const SimContext& ctx,
 }
 
 Cluster::~Cluster() {
-  //--
+  auto stats_enabled = std::getenv("VORTEX_TEAM_TENSOR_STATS");
+  if (stats_enabled != nullptr && stats_enabled[0] != '\0' && stats_enabled[0] != '0') {
+    std::cout << "TEAM_TENSOR_STATS: cluster=" << cluster_id_
+              << " commands=" << team_tensor_stats_.commands
+              << " mma_steps=" << team_tensor_stats_.mma_steps
+              << " input_bytes=" << team_tensor_stats_.input_bytes
+              << " output_bytes=" << team_tensor_stats_.output_bytes
+              << " modeled_cycles=" << team_tensor_stats_.modeled_cycles
+              << std::endl;
+  }
 }
 
 void Cluster::reset() {
@@ -96,6 +122,7 @@ void Cluster::reset() {
     barrier.reset();
   }
   cooperative_teams_.clear();
+  team_tensor_stats_ = TeamTensorStats();
 }
 
 void Cluster::tick() {
@@ -309,6 +336,63 @@ void Cluster::team_panel_read(uint32_t core_id, void* data, uint64_t addr, uint3
   std::memcpy(data, team.panel_store.data() + panel_offset, size);
 }
 
+uint32_t Cluster::team_tensor_mma(uint32_t core_id, uint32_t n_tiles) {
+  static constexpr uint32_t kTileM = 8;
+  static constexpr uint32_t kTileN = 4;
+  static constexpr uint32_t kTileK = 8;
+
+  auto sockets_per_cluster = sockets_.size();
+  auto cores_per_socket = cores_per_socket_;
+  uint32_t cores_per_cluster = sockets_per_cluster * cores_per_socket;
+  uint32_t local_core_id = core_id % cores_per_cluster;
+
+  auto* core = this->get_core(local_core_id);
+  auto& coop = core->emulator().cooperative_ctx();
+  auto& team = get_team_state(local_core_id, coop);
+
+  assert(ram_ != nullptr);
+  assert(n_tiles != 0);
+  assert(coop.tensor_k_tiles != 0);
+  assert(coop.tensor_a_stride != 0);
+  assert(coop.tensor_b_stride != 0);
+  assert(coop.tensor_c_stride != 0);
+
+  uint32_t k_elems = coop.tensor_k_tiles * kTileK;
+  uint32_t n_elems = n_tiles * kTileN;
+  uint32_t a_bytes = kTileM * k_elems * sizeof(uint16_t);
+  uint32_t b_bytes = k_elems * n_elems * sizeof(uint16_t);
+  uint32_t c_bytes = kTileM * n_elems * sizeof(uint32_t);
+  uint32_t mma_steps = coop.tensor_k_tiles * n_tiles;
+  uint32_t modeled_cycles = estimate_team_tensor_cycles(a_bytes + b_bytes, c_bytes, mma_steps);
+
+  for (uint32_t m = 0; m < kTileM; ++m) {
+    for (uint32_t n = 0; n < n_elems; ++n) {
+      uint32_t acc = 0;
+      for (uint32_t k = 0; k < k_elems; ++k) {
+        uint32_t a_offset = coop.tensor_a_offset
+                          + sizeof(uint16_t) * (m * coop.tensor_a_stride + k);
+        uint32_t b_offset = coop.tensor_b_offset
+                          + sizeof(uint16_t) * (k * coop.tensor_b_stride + n);
+        auto a = rv_htof_s(read_u16(team.panel_store, a_offset), 0, nullptr);
+        auto b = rv_htof_s(read_u16(team.panel_store, b_offset), 0, nullptr);
+        auto ab = rv_fmul_s(a, b, 0, nullptr);
+        acc = rv_fadd_s(ab, acc, 0, nullptr);
+      }
+
+      uint64_t c_addr = coop.tensor_c_addr
+                      + sizeof(uint32_t) * (m * coop.tensor_c_stride + n);
+      ram_->write(&acc, c_addr, sizeof(acc));
+    }
+  }
+
+  ++team_tensor_stats_.commands;
+  team_tensor_stats_.mma_steps += mma_steps;
+  team_tensor_stats_.input_bytes += a_bytes + b_bytes;
+  team_tensor_stats_.output_bytes += c_bytes;
+  team_tensor_stats_.modeled_cycles += modeled_cycles;
+  return modeled_cycles;
+}
+
 Core* Cluster::get_core(uint32_t local_core_id) const {
   uint32_t socket_id = local_core_id / cores_per_socket_;
   uint32_t socket_core_id = local_core_id % cores_per_socket_;
@@ -395,7 +479,9 @@ Cluster::TeamState& Cluster::get_team_state(uint32_t local_core_id, const cooper
   return team;
 }
 
-void Cluster::write_team_panel(TeamState& team, uint32_t panel_offset, const std::vector<uint8_t>& data) {
+void Cluster::write_team_panel(TeamState& team,
+                              uint32_t panel_offset,
+                              const std::vector<uint8_t>& data) {
   auto end_offset = panel_offset + data.size();
   if (team.panel_store.size() < end_offset) {
     team.panel_store.resize(end_offset);
@@ -416,7 +502,9 @@ void Cluster::execute_pending_copies(TeamState& team) {
         multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
       } else if (is_panel_mode(src_ctx.copy_mode[copy_idx])) {
         multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
-        write_team_panel(team, src_ctx.src_offset[copy_idx], multicast_buffer);
+        write_team_panel(team,
+                         src_ctx.src_offset[copy_idx],
+                         multicast_buffer);
         continue;
       }
 
@@ -446,7 +534,9 @@ void Cluster::execute_pending_copies(TeamState& team) {
       multicast_buffer = fetch_global_tile(copy_desc);
     } else if (is_panel_mode(copy_desc.copy_mode)) {
       multicast_buffer = fetch_global_tile(copy_desc);
-      write_team_panel(team, copy_desc.src_offset, multicast_buffer);
+      write_team_panel(team,
+                       copy_desc.src_offset,
+                       multicast_buffer);
       continue;
     }
 
@@ -503,4 +593,17 @@ uint32_t Cluster::estimate_transfer_cycles(const TeamState& team) const {
   }
   uint32_t cycles = (source_bytes + 15) / 16 + (fanout_bytes + 31) / 32;
   return std::max<uint32_t>(1, cycles);
+}
+
+uint32_t Cluster::estimate_team_tensor_cycles(uint32_t input_bytes,
+                                              uint32_t output_bytes,
+                                              uint32_t mma_steps) const {
+  uint32_t descriptor_cycles = get_env_u32("VORTEX_TEAM_TENSOR_DESC_LATENCY", 0);
+  uint32_t mma_cycles = get_env_u32("VORTEX_TEAM_TENSOR_MMA_LATENCY", 0) * mma_steps;
+  uint32_t bytes_per_cycle = get_env_u32("VORTEX_TEAM_TENSOR_BYTES_PER_CYCLE", 0);
+  uint32_t byte_cycles = 0;
+  if (bytes_per_cycle != 0) {
+    byte_cycles = (input_bytes + output_bytes + bytes_per_cycle - 1) / bytes_per_cycle;
+  }
+  return descriptor_cycles + mma_cycles + byte_cycles;
 }

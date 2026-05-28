@@ -64,6 +64,31 @@ typedef void (*vx_serial_cb)(void *arg);
 #define VX_TEAM_PANEL_OFFSET 0x2000u
 #define VX_TEAM_PANEL_WINDOW 0x10000u
 
+#ifndef VX_CSR_TEAM_TENSOR_A_OFFSET
+#define VX_CSR_TEAM_TENSOR_A_OFFSET 0xFD4
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_OFFSET
+#define VX_CSR_TEAM_TENSOR_B_OFFSET 0xFD5
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_C_ADDR
+#define VX_CSR_TEAM_TENSOR_C_ADDR 0xFD6
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_C_STRIDE
+#define VX_CSR_TEAM_TENSOR_C_STRIDE 0xFD7
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_A_STRIDE
+#define VX_CSR_TEAM_TENSOR_A_STRIDE 0xFD8
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_STRIDE
+#define VX_CSR_TEAM_TENSOR_B_STRIDE 0xFD9
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_K_TILES
+#define VX_CSR_TEAM_TENSOR_K_TILES 0xFDA
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_RUN
+#define VX_CSR_TEAM_TENSOR_RUN 0xFDB
+#endif
+
 inline uint32_t vx_team_rank() {
   return __team_rank_y * __team_size_x + __team_rank_x;
 }
@@ -160,6 +185,24 @@ inline void vx_team_set_panel_oracle_slot_2d(uint32_t slot,
   } else {
     csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_PANEL_ORACLE);
   }
+}
+
+inline void vx_team_tensor_mma_panel(uint32_t a_panel_offset,
+                                     uint32_t b_panel_offset,
+                                     uint64_t c_addr,
+                                     uint32_t c_stride,
+                                     uint32_t a_stride,
+                                     uint32_t b_stride,
+                                     uint32_t k_tiles,
+                                     uint32_t n_tiles) {
+  csr_write(VX_CSR_TEAM_TENSOR_A_OFFSET, a_panel_offset);
+  csr_write(VX_CSR_TEAM_TENSOR_B_OFFSET, b_panel_offset);
+  csr_write(VX_CSR_TEAM_TENSOR_C_ADDR, c_addr);
+  csr_write(VX_CSR_TEAM_TENSOR_C_STRIDE, c_stride);
+  csr_write(VX_CSR_TEAM_TENSOR_A_STRIDE, a_stride);
+  csr_write(VX_CSR_TEAM_TENSOR_B_STRIDE, b_stride);
+  csr_write(VX_CSR_TEAM_TENSOR_K_TILES, k_tiles);
+  csr_write(VX_CSR_TEAM_TENSOR_RUN, n_tiles);
 }
 
 inline void vx_team_set_copy(uint32_t src_offset, uint32_t copy_size, uint32_t dst_mask) {

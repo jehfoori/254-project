@@ -34,6 +34,22 @@ public:
     CacheSim::PerfStats l2cache;
   };
 
+  struct TeamTensorStats {
+    uint64_t commands;
+    uint64_t mma_steps;
+    uint64_t input_bytes;
+    uint64_t output_bytes;
+    uint64_t modeled_cycles;
+
+    TeamTensorStats()
+      : commands(0)
+      , mma_steps(0)
+      , input_bytes(0)
+      , output_bytes(0)
+      , modeled_cycles(0)
+    {}
+  };
+
   std::vector<SimPort<MemReq>> mem_req_ports;
   std::vector<SimPort<MemRsp>> mem_rsp_ports;
 
@@ -74,6 +90,7 @@ public:
   void cooperative_wait(uint32_t core_id);
   bool is_team_panel_addr(uint64_t addr) const;
   void team_panel_read(uint32_t core_id, void* data, uint64_t addr, uint32_t size);
+  uint32_t team_tensor_mma(uint32_t core_id, uint32_t n_tiles);
 
   PerfStats perf_stats() const;
 
@@ -122,10 +139,15 @@ private:
   std::vector<uint8_t> fetch_global_tile(const cooperative_ctx_t& ctx, uint32_t copy_idx) const;
   std::vector<uint8_t> fetch_global_tile(const TeamState::CopyDesc& copy_desc) const;
   TeamState& get_team_state(uint32_t local_core_id, const cooperative_ctx_t& coop);
-  void write_team_panel(TeamState& team, uint32_t panel_offset, const std::vector<uint8_t>& data);
+  void write_team_panel(TeamState& team,
+                        uint32_t panel_offset,
+                        const std::vector<uint8_t>& data);
   void execute_pending_copies(TeamState& team);
   void resume_waiters(TeamState& team);
   uint32_t estimate_transfer_cycles(const TeamState& team) const;
+  uint32_t estimate_team_tensor_cycles(uint32_t input_bytes,
+                                       uint32_t output_bytes,
+                                       uint32_t mma_steps) const;
 
   uint32_t                    cluster_id_;
   ProcessorImpl*              processor_;
@@ -135,6 +157,7 @@ private:
   std::unordered_map<uint32_t, TeamState> cooperative_teams_;
   CacheSim::Ptr               l2cache_;
   uint32_t                    cores_per_socket_;
+  TeamTensorStats             team_tensor_stats_;
 };
 
 } // namespace vortex

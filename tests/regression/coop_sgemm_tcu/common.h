@@ -35,6 +35,10 @@
 #define COOP_DIAG_SERIAL_N2 0
 #endif
 
+#ifndef COOP_TENSOR_FEED_ORACLE
+#define COOP_TENSOR_FEED_ORACLE 0
+#endif
+
 typedef struct {
   uint32_t team_id;
   uint32_t team_rank_x;
