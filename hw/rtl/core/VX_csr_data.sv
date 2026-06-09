@@ -51,6 +51,8 @@ import VX_fpu_pkg::*;
     VX_fpu_csr_if.slave                 fpu_csr_if [`NUM_FPU_BLOCKS],
 `endif
 
+    VX_mem_bus_if.master                tensor_mem_bus_if,
+
     input wire [PERF_CTR_BITS-1:0]      cycles,
     input wire [`NUM_WARPS-1:0]         active_warps,
     input wire [`NUM_WARPS-1:0][`NUM_THREADS-1:0] thread_masks,
@@ -69,13 +71,70 @@ import VX_fpu_pkg::*;
     input wire [`XLEN-1:0]              write_data
 );
 
-    `UNUSED_VAR (reset)
     `UNUSED_VAR (write_wid)
-    `UNUSED_VAR (write_data)
 
     // CSRs Write /////////////////////////////////////////////////////////////
 
     reg [`XLEN-1:0] mscratch;
+    reg [`XLEN-1:0] team_id;
+    reg [`XLEN-1:0] team_rank;
+    reg [`XLEN-1:0] team_size;
+    reg [`XLEN-1:0] team_tile_rows;
+    reg [`XLEN-1:0] team_global_stride;
+    reg [1:0][`XLEN-1:0] team_src_offset;
+    reg [1:0][`XLEN-1:0] team_copy_size;
+    reg [1:0][`XLEN-1:0] team_dst_mask;
+    reg [1:0][`XLEN-1:0] team_copy_mode;
+    reg [1:0][`XLEN-1:0] team_global_addr;
+    reg [`XLEN-1:0] tensor_a_offset;
+    reg [`XLEN-1:0] tensor_b_offset;
+    reg [`XLEN-1:0] tensor_c_addr;
+    reg [`XLEN-1:0] tensor_c_stride;
+    reg [`XLEN-1:0] tensor_a_stride;
+    reg [`XLEN-1:0] tensor_b_stride;
+    reg [`XLEN-1:0] tensor_k_tiles;
+    reg [`XLEN-1:0] tensor_run_n_tiles;
+    reg [`XLEN-1:0] tensor_status_sel;
+    reg [`XLEN-1:0] tensor_a_seed;
+    reg [`XLEN-1:0] tensor_b_seed;
+    reg [`XLEN-1:0] tensor_a_word0;
+    reg [`XLEN-1:0] tensor_a_word1;
+    reg [`XLEN-1:0] tensor_b_word0;
+    reg [`XLEN-1:0] tensor_b_word1;
+    wire [`XLEN-1:0] tensor_status;
+    wire              tensor_busy;
+    wire              tensor_done;
+    wire              tensor_run_fire = write_enable && (write_addr == `VX_CSR_TEAM_TENSOR_RUN);
+
+    `UNUSED_VAR (tensor_busy)
+    `UNUSED_VAR (tensor_done)
+
+    VX_team_panel_engine #(
+        .INSTANCE_ID (INSTANCE_ID)
+    ) team_panel_engine (
+        .clk        (clk),
+        .reset      (reset),
+        .run_valid  (tensor_run_fire),
+        .a_offset   (tensor_a_offset),
+        .b_offset   (tensor_b_offset),
+        .c_addr     (tensor_c_addr),
+        .c_stride   (tensor_c_stride),
+        .a_stride   (tensor_a_stride),
+        .b_stride   (tensor_b_stride),
+        .k_tiles    (tensor_k_tiles),
+        .n_tiles    (write_data),
+        .a_seed     (tensor_a_seed),
+        .b_seed     (tensor_b_seed),
+        .a_word0    (tensor_a_word0),
+        .a_word1    (tensor_a_word1),
+        .b_word0    (tensor_b_word0),
+        .b_word1    (tensor_b_word1),
+        .status_sel (tensor_status_sel),
+        .mem_bus_if (tensor_mem_bus_if),
+        .status     (tensor_status),
+        .busy       (tensor_busy),
+        .done       (tensor_done)
+    );
 
 `ifdef EXT_F_ENABLE
     reg [`NUM_WARPS-1:0][INST_FRM_BITS+`FP_FLAGS_BITS-1:0] fcsr, fcsr_n;
@@ -123,6 +182,31 @@ import VX_fpu_pkg::*;
     always @(posedge clk) begin
         if (reset) begin
             mscratch <= base_dcrs.startup_arg;
+            team_id <= '0;
+            team_rank <= '0;
+            team_size <= '0;
+            team_tile_rows <= '0;
+            team_global_stride <= '0;
+            team_src_offset <= '0;
+            team_copy_size <= '0;
+            team_dst_mask <= '0;
+            team_copy_mode <= '0;
+            team_global_addr <= '0;
+            tensor_a_offset <= '0;
+            tensor_b_offset <= '0;
+            tensor_c_addr <= '0;
+            tensor_c_stride <= '0;
+            tensor_a_stride <= '0;
+            tensor_b_stride <= '0;
+            tensor_k_tiles <= '0;
+            tensor_run_n_tiles <= '0;
+            tensor_status_sel <= '0;
+            tensor_a_seed <= '0;
+            tensor_b_seed <= '0;
+            tensor_a_word0 <= '0;
+            tensor_a_word1 <= '0;
+            tensor_b_word0 <= '0;
+            tensor_b_word1 <= '0;
         end
         if (write_enable) begin
             case (write_addr)
@@ -145,6 +229,96 @@ import VX_fpu_pkg::*;
                 end
                 `VX_CSR_MSCRATCH: begin
                     mscratch <= write_data;
+                end
+                `VX_CSR_TEAM_ID: begin
+                    team_id <= write_data;
+                end
+                `VX_CSR_TEAM_RANK: begin
+                    team_rank <= write_data;
+                end
+                `VX_CSR_TEAM_SIZE: begin
+                    team_size <= write_data;
+                end
+                `VX_CSR_TEAM_TILE_ROWS: begin
+                    team_tile_rows <= write_data;
+                end
+                `VX_CSR_TEAM_GLOBAL_STRIDE: begin
+                    team_global_stride <= write_data;
+                end
+                `VX_CSR_TEAM_SRC_OFFSET: begin
+                    team_src_offset[0] <= write_data;
+                end
+                `VX_CSR_TEAM_COPY_SIZE: begin
+                    team_copy_size[0] <= write_data;
+                end
+                `VX_CSR_TEAM_DST_MASK: begin
+                    team_dst_mask[0] <= write_data;
+                end
+                `VX_CSR_TEAM_COPY_MODE: begin
+                    team_copy_mode[0] <= write_data;
+                end
+                `VX_CSR_TEAM_GLOBAL_ADDR: begin
+                    team_global_addr[0] <= write_data;
+                end
+                `VX_CSR_TEAM_SRC_OFFSET_1: begin
+                    team_src_offset[1] <= write_data;
+                end
+                `VX_CSR_TEAM_COPY_SIZE_1: begin
+                    team_copy_size[1] <= write_data;
+                end
+                `VX_CSR_TEAM_DST_MASK_1: begin
+                    team_dst_mask[1] <= write_data;
+                end
+                `VX_CSR_TEAM_COPY_MODE_1: begin
+                    team_copy_mode[1] <= write_data;
+                end
+                `VX_CSR_TEAM_GLOBAL_ADDR_1: begin
+                    team_global_addr[1] <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_A_OFFSET: begin
+                    tensor_a_offset <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_B_OFFSET: begin
+                    tensor_b_offset <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_C_ADDR: begin
+                    tensor_c_addr <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_C_STRIDE: begin
+                    tensor_c_stride <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_A_STRIDE: begin
+                    tensor_a_stride <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_B_STRIDE: begin
+                    tensor_b_stride <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_K_TILES: begin
+                    tensor_k_tiles <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_A_SEED: begin
+                    tensor_a_seed <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_B_SEED: begin
+                    tensor_b_seed <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_A_WORD0: begin
+                    tensor_a_word0 <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_A_WORD1: begin
+                    tensor_a_word1 <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_B_WORD0: begin
+                    tensor_b_word0 <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_B_WORD1: begin
+                    tensor_b_word1 <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_STATUS_SEL: begin
+                    tensor_status_sel <= write_data;
+                end
+                `VX_CSR_TEAM_TENSOR_RUN: begin
+                    tensor_run_n_tiles <= write_data;
                 end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
@@ -183,6 +357,37 @@ import VX_fpu_pkg::*;
             `VX_CSR_NUM_WARPS  : read_data_ro_w = `XLEN'(`NUM_WARPS);
             `VX_CSR_NUM_CORES  : read_data_ro_w = `XLEN'(`NUM_CORES * `NUM_CLUSTERS);
             `VX_CSR_LOCAL_MEM_BASE: read_data_ro_w = `XLEN'(`LMEM_BASE_ADDR);
+            `VX_CSR_TEAM_ID: read_data_rw_w = team_id;
+            `VX_CSR_TEAM_RANK: read_data_rw_w = team_rank;
+            `VX_CSR_TEAM_SIZE: read_data_rw_w = team_size;
+            `VX_CSR_TEAM_TILE_ROWS: read_data_rw_w = team_tile_rows;
+            `VX_CSR_TEAM_GLOBAL_STRIDE: read_data_rw_w = team_global_stride;
+            `VX_CSR_TEAM_SRC_OFFSET: read_data_rw_w = team_src_offset[0];
+            `VX_CSR_TEAM_COPY_SIZE: read_data_rw_w = team_copy_size[0];
+            `VX_CSR_TEAM_DST_MASK: read_data_rw_w = team_dst_mask[0];
+            `VX_CSR_TEAM_COPY_MODE: read_data_rw_w = team_copy_mode[0];
+            `VX_CSR_TEAM_GLOBAL_ADDR: read_data_rw_w = team_global_addr[0];
+            `VX_CSR_TEAM_SRC_OFFSET_1: read_data_rw_w = team_src_offset[1];
+            `VX_CSR_TEAM_COPY_SIZE_1: read_data_rw_w = team_copy_size[1];
+            `VX_CSR_TEAM_DST_MASK_1: read_data_rw_w = team_dst_mask[1];
+            `VX_CSR_TEAM_COPY_MODE_1: read_data_rw_w = team_copy_mode[1];
+            `VX_CSR_TEAM_GLOBAL_ADDR_1: read_data_rw_w = team_global_addr[1];
+            `VX_CSR_TEAM_TENSOR_A_OFFSET: read_data_rw_w = tensor_a_offset;
+            `VX_CSR_TEAM_TENSOR_B_OFFSET: read_data_rw_w = tensor_b_offset;
+            `VX_CSR_TEAM_TENSOR_C_ADDR: read_data_rw_w = tensor_c_addr;
+            `VX_CSR_TEAM_TENSOR_C_STRIDE: read_data_rw_w = tensor_c_stride;
+            `VX_CSR_TEAM_TENSOR_A_STRIDE: read_data_rw_w = tensor_a_stride;
+            `VX_CSR_TEAM_TENSOR_B_STRIDE: read_data_rw_w = tensor_b_stride;
+            `VX_CSR_TEAM_TENSOR_K_TILES: read_data_rw_w = tensor_k_tiles;
+            `VX_CSR_TEAM_TENSOR_A_SEED: read_data_rw_w = tensor_a_seed;
+            `VX_CSR_TEAM_TENSOR_B_SEED: read_data_rw_w = tensor_b_seed;
+            `VX_CSR_TEAM_TENSOR_A_WORD0: read_data_rw_w = tensor_a_word0;
+            `VX_CSR_TEAM_TENSOR_A_WORD1: read_data_rw_w = tensor_a_word1;
+            `VX_CSR_TEAM_TENSOR_B_WORD0: read_data_rw_w = tensor_b_word0;
+            `VX_CSR_TEAM_TENSOR_B_WORD1: read_data_rw_w = tensor_b_word1;
+            `VX_CSR_TEAM_TENSOR_STATUS_SEL: read_data_rw_w = tensor_status_sel;
+            `VX_CSR_TEAM_TENSOR_STATUS: read_data_rw_w = tensor_status;
+            `VX_CSR_TEAM_TENSOR_RUN: read_data_rw_w = tensor_run_n_tiles;
 
             `CSR_READ_64(`VX_CSR_MCYCLE, read_data_ro_w, cycles);
 

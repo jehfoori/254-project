@@ -85,6 +85,7 @@ module VX_mem_arb import VX_gpu_pkg::*; #(
         assign req_ready_out[i] = bus_out_if[i].req_ready;
         
         if (NUM_INPUTS > NUM_OUTPUTS) begin : g_req_tag_sel_out
+            /* verilator lint_off WIDTHEXPAND */
             VX_bits_insert #(
             .N   (TAG_WIDTH),
             .S   (LOG_NUM_REQS),
@@ -94,6 +95,7 @@ module VX_mem_arb import VX_gpu_pkg::*; #(
                 .ins_in   (req_sel_out[i]),
                 .data_out (bus_out_if[i].req_data.tag)
             );
+            /* verilator lint_on WIDTHEXPAND */
         end else begin : g_req_tag_out
             `UNUSED_VAR (req_sel_out)
             assign bus_out_if[i].req_data.tag = req_tag_out;
@@ -116,6 +118,7 @@ module VX_mem_arb import VX_gpu_pkg::*; #(
 
         for (genvar i = 0; i < NUM_OUTPUTS; ++i) begin : g_rsp_data_in
             wire [TAG_WIDTH-1:0] rsp_tag_out;
+            /* verilator lint_off WIDTHEXPAND */
             VX_bits_remove #(
                 .N   (TAG_WIDTH + LOG_NUM_REQS),
                 .S   (LOG_NUM_REQS),
@@ -125,6 +128,7 @@ module VX_mem_arb import VX_gpu_pkg::*; #(
                 .sel_out  (rsp_sel_in[i]),
                 .data_out (rsp_tag_out)
             );
+            /* verilator lint_on WIDTHEXPAND */
             assign rsp_valid_in[i] = bus_out_if[i].rsp_valid;
             assign rsp_data_in[i]  = {bus_out_if[i].rsp_data.data, rsp_tag_out};
             assign bus_out_if[i].rsp_ready = rsp_ready_in[i];

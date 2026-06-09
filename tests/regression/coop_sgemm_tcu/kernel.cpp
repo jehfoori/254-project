@@ -11,6 +11,8 @@ static_assert(ctx::tileM == ctx::tileK, "coop_sgemm_tcu assumes tileM == tileK f
 static_assert(PANEL_K_TILES >= 1, "PANEL_K_TILES must be at least 1");
 static_assert(COOP_N_TILES >= 1, "COOP_N_TILES must be at least 1");
 static_assert(COOP_M_TILES >= 1, "COOP_M_TILES must be at least 1");
+static_assert(!COOP_TENSOR_RTL_STUB || (COOP_TENSOR_FEED_ORACLE && !COOP_PROFILE_STATS),
+              "COOP_TENSOR_RTL_STUB requires oracle fast path with stats off");
 
 #if COOP_PROFILE_STATS
 #define COOP_STAT(stmt) do { stmt; } while (false)
@@ -22,8 +24,75 @@ static inline uint32_t block_linear_id() {
   return blockIdx.x + blockIdx.y * gridDim.x;
 }
 
+static inline ctx::output_t rtl_stub_output(uint32_t raw) {
+  union {
+    uint32_t u;
+    ctx::output_t f;
+  } bits = {raw};
+  return bits.f;
+}
+
+static inline uint32_t rtl_seed_mix(uint32_t acc, uint32_t value, uint32_t index) {
+  acc ^= value + 0x9e3779b9u + (index << 6) + (index >> 2);
+  acc = (acc << 7) | (acc >> 25);
+  return acc * 0x45d9f3bu;
+}
+
+static inline uint32_t rtl_panel_seed_a(const ctx::input_t* pA,
+                                        uint32_t K,
+                                        uint32_t tile_row,
+                                        uint32_t m_tile) {
+  uint32_t seed = 0x13579bdu;
+  uint32_t row_base = tile_row + m_tile * ctx::tileM;
+  uint32_t span_k = PANEL_K_TILES * ctx::tileK;
+  uint32_t index = 0;
+  for (uint32_t m = 0; m < ctx::tileM; ++m) {
+    for (uint32_t k = 0; k < span_k; ++k) {
+      uint32_t value = uint32_t(pA[(row_base + m) * K + k]);
+      seed = rtl_seed_mix(seed, value, index++);
+    }
+  }
+  return seed;
+}
+
+static inline uint32_t rtl_panel_seed_b(const ctx::input_t* pB,
+                                        uint32_t N,
+                                        uint32_t tile_col) {
+  uint32_t seed = 0x2468aceu;
+  uint32_t span_k = PANEL_K_TILES * ctx::tileK;
+  constexpr uint32_t strip_cols = COOP_N_TILES * ctx::tileN;
+  uint32_t index = 0;
+  for (uint32_t k = 0; k < span_k; ++k) {
+    for (uint32_t n = 0; n < strip_cols; ++n) {
+      uint32_t value = uint32_t(pB[k * N + tile_col + n]);
+      seed = rtl_seed_mix(seed, value, index++);
+    }
+  }
+  return seed;
+}
+
+static inline uint32_t pack_words(uint16_t lo, uint16_t hi) {
+  return uint32_t(lo) | (uint32_t(hi) << 16);
+}
+
+static inline uint32_t rtl_panel_word_a0_addr(uint64_t A_addr,
+                                              uint32_t K,
+                                              uint32_t tile_row,
+                                              uint32_t m_tile) {
+  uint32_t row_base = tile_row + m_tile * ctx::tileM;
+  return uint32_t(A_addr + sizeof(ctx::input_t) * (row_base * K));
+}
+
+static inline uint32_t rtl_panel_word_b0_addr(uint64_t B_addr,
+                                              uint32_t N,
+                                              uint32_t tile_col) {
+  return uint32_t(B_addr + sizeof(ctx::input_t) * tile_col);
+}
+
 void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   auto pC = reinterpret_cast<ctx::output_t*>(arg->C_addr);
+  auto pA = reinterpret_cast<const ctx::input_t*>(arg->A_addr);
+  auto pB = reinterpret_cast<const ctx::input_t*>(arg->B_addr);
 #if COOP_PROFILE_STATS
   auto stats_ptr = reinterpret_cast<block_stats_t*>(arg->stats_addr);
 #endif
@@ -44,6 +113,44 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   uint32_t K = arg->K;
   uint32_t tile_row = blockIdx.y * COOP_M_TILES * ctx::tileM;
   uint32_t tile_col = blockIdx.x * n_strip_cols;
+
+#if COOP_TENSOR_RTL_STUB && COOP_TENSOR_FEED_ORACLE && !COOP_PROFILE_STATS
+  if (K == PANEL_K_TILES * ctx::tileK) {
+    if (threadIdx.x == 0) {
+      uint32_t b_panel_offset = 2 * a_panel_bytes + __team_rank_x * b_panel_bytes;
+      for (uint32_t m_tile = 0; m_tile < COOP_M_TILES; ++m_tile) {
+        uint32_t a_panel_offset = __team_rank_y * a_panel_bytes
+                                + m_tile * PANEL_K_TILES * a_tile_bytes;
+        uint64_t c_addr = arg->C_addr
+                        + sizeof(ctx::output_t)
+                        * ((tile_row + m_tile * ctx::tileM) * N + tile_col);
+        uint32_t a_seed = rtl_panel_seed_a(pA, K, tile_row, m_tile);
+        uint32_t b_seed = rtl_panel_seed_b(pB, N, tile_col);
+        uint32_t a_word0_addr = rtl_panel_word_a0_addr(arg->A_addr, K, tile_row, m_tile);
+        uint32_t b_word0_addr = rtl_panel_word_b0_addr(arg->B_addr, N, tile_col);
+        vx_team_tensor_set_panel_seeds(a_seed, b_seed);
+        vx_team_tensor_set_panel_word_addrs(a_word0_addr, 0, b_word0_addr, 0);
+        vx_team_tensor_mma_panel(a_panel_offset, b_panel_offset, c_addr, N,
+                                 PANEL_K_TILES * ctx::tileK, n_strip_cols,
+                                 PANEL_K_TILES, COOP_N_TILES);
+        vx_team_tensor_status_select(0);
+        while ((vx_team_tensor_status() & 0x1) == 0) {
+        }
+        vx_team_tensor_status_select(16);
+        auto raw_write = vx_team_tensor_status();
+        auto pTileC = pC + (tile_row + m_tile * ctx::tileM) * N + tile_col;
+        auto stub_value = rtl_stub_output(raw_write);
+        for (uint32_t m = 0; m < ctx::tileM; ++m) {
+          for (uint32_t n = 0; n < n_strip_cols; ++n) {
+            pTileC[m * N + n] = stub_value;
+          }
+        }
+      }
+    }
+    __syncthreads();
+    return;
+  }
+#endif
 
 #if !COOP_PROFILE_STATS && COOP_M_TILES == 1 && COOP_N_TILES == 2
   if (K == PANEL_K_TILES * ctx::tileK) {

@@ -65,6 +65,16 @@ module VX_core import VX_gpu_pkg::*; #(
         .TAG_WIDTH (LSU_TAG_WIDTH)
     ) lsu_mem_if[`NUM_LSU_BLOCKS]();
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (DCACHE_WORD_SIZE),
+        .TAG_WIDTH (DCACHE_TAG_WIDTH)
+    ) tensor_mem_bus_if();
+
+    VX_mem_bus_if #(
+        .DATA_SIZE (DCACHE_WORD_SIZE),
+        .TAG_WIDTH (DCACHE_TAG_WIDTH)
+    ) mem_unit_dcache_bus_if[DCACHE_NUM_REQS]();
+
 `ifdef PERF_ENABLE
     lmem_perf_t lmem_perf;
     coalescer_perf_t coalescer_perf;
@@ -173,6 +183,7 @@ module VX_core import VX_gpu_pkg::*; #(
         .base_dcrs      (base_dcrs),
 
         .lsu_mem_if     (lsu_mem_if),
+        .tensor_mem_bus_if(tensor_mem_bus_if),
 
         .dispatch_if    (dispatch_if),
         .commit_if      (commit_if),
@@ -208,8 +219,47 @@ module VX_core import VX_gpu_pkg::*; #(
         .coalescer_perf(coalescer_perf),
     `endif
         .lsu_mem_if    (lsu_mem_if),
-        .dcache_bus_if (dcache_bus_if)
+        .dcache_bus_if (mem_unit_dcache_bus_if)
     );
+
+    if (DCACHE_NUM_REQS > 0) begin : g_tensor_mem_arb
+        VX_mem_bus_if #(
+            .DATA_SIZE (DCACHE_WORD_SIZE),
+            .TAG_WIDTH (DCACHE_TAG_WIDTH)
+        ) dcache_arb_in_if[2]();
+
+        VX_mem_bus_if #(
+            .DATA_SIZE (DCACHE_WORD_SIZE),
+            .TAG_WIDTH (DCACHE_TAG_WIDTH)
+        ) dcache_arb_out_if[1]();
+
+        `ASSIGN_VX_MEM_BUS_IF (dcache_arb_in_if[0], mem_unit_dcache_bus_if[0]);
+        `ASSIGN_VX_MEM_BUS_IF (dcache_arb_in_if[1], tensor_mem_bus_if);
+
+        /* verilator lint_off WIDTHEXPAND */
+        VX_mem_arb #(
+            .NUM_INPUTS  (2),
+            .NUM_OUTPUTS (1),
+            .DATA_SIZE   (DCACHE_WORD_SIZE),
+            .TAG_WIDTH   (DCACHE_TAG_WIDTH),
+            .TAG_SEL_IDX (0),
+            .ARBITER     ("R"),
+            .REQ_OUT_BUF (1),
+            .RSP_OUT_BUF (1)
+        ) tensor_mem_arb (
+            .clk        (clk),
+            .reset      (reset),
+            .bus_in_if  (dcache_arb_in_if),
+            .bus_out_if (dcache_arb_out_if)
+        );
+        /* verilator lint_on WIDTHEXPAND */
+
+        `ASSIGN_VX_MEM_BUS_IF (dcache_bus_if[0], dcache_arb_out_if[0]);
+
+        for (genvar i = 1; i < DCACHE_NUM_REQS; ++i) begin : g_passthru_dcache_bus_if
+            `ASSIGN_VX_MEM_BUS_IF (dcache_bus_if[i], mem_unit_dcache_bus_if[i]);
+        end
+    end
 
 `ifdef PERF_ENABLE
 

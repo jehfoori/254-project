@@ -31,6 +31,7 @@ module VX_execute import VX_gpu_pkg::*; #(
 
     // Dcache interface
     VX_lsu_mem_if.master    lsu_mem_if [`NUM_LSU_BLOCKS],
+    VX_mem_bus_if.master    tensor_mem_bus_if,
 
     // dispatch interface
     VX_dispatch_if.slave    dispatch_if [NUM_EX_UNITS * `ISSUE_WIDTH],
@@ -113,6 +114,7 @@ module VX_execute import VX_gpu_pkg::*; #(
     `ifdef EXT_F_ENABLE
         .fpu_csr_if     (fpu_csr_if),
     `endif
+        .tensor_mem_bus_if(tensor_mem_bus_if),
         .commit_csr_if  (commit_csr_if),
         .sched_csr_if   (sched_csr_if),
         .warp_ctl_if    (warp_ctl_if)

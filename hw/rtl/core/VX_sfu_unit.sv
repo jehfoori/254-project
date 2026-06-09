@@ -34,6 +34,8 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
     VX_fpu_csr_if.slave     fpu_csr_if [`NUM_FPU_BLOCKS],
 `endif
 
+    VX_mem_bus_if.master    tensor_mem_bus_if,
+
     VX_commit_csr_if.slave  commit_csr_if,
     VX_sched_csr_if.slave   sched_csr_if,
 
@@ -130,6 +132,7 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
     `ifdef EXT_F_ENABLE
         .fpu_csr_if     (fpu_csr_if),
     `endif
+        .tensor_mem_bus_if(tensor_mem_bus_if),
 
         .sched_csr_if   (sched_csr_if),
         .commit_csr_if  (commit_csr_if),

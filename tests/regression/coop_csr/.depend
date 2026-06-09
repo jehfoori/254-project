@@ -1,0 +1,3 @@
+main.o: /root/vortex/tests/regression/coop_csr/main.cpp \
+ /root/vortex/runtime/include/vortex.h /root/vortex/build/hw/VX_config.h \
+ /root/vortex/tests/regression/coop_csr/common.h

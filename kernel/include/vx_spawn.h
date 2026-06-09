@@ -88,6 +88,30 @@ typedef void (*vx_serial_cb)(void *arg);
 #ifndef VX_CSR_TEAM_TENSOR_RUN
 #define VX_CSR_TEAM_TENSOR_RUN 0xFDB
 #endif
+#ifndef VX_CSR_TEAM_TENSOR_STATUS_SEL
+#define VX_CSR_TEAM_TENSOR_STATUS_SEL 0xFDC
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_STATUS
+#define VX_CSR_TEAM_TENSOR_STATUS 0xFDD
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_A_SEED
+#define VX_CSR_TEAM_TENSOR_A_SEED 0xFDE
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_SEED
+#define VX_CSR_TEAM_TENSOR_B_SEED 0xFDF
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_A_WORD0
+#define VX_CSR_TEAM_TENSOR_A_WORD0 0xFE0
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_A_WORD1
+#define VX_CSR_TEAM_TENSOR_A_WORD1 0xFE1
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_WORD0
+#define VX_CSR_TEAM_TENSOR_B_WORD0 0xFE2
+#endif
+#ifndef VX_CSR_TEAM_TENSOR_B_WORD1
+#define VX_CSR_TEAM_TENSOR_B_WORD1 0xFE3
+#endif
 
 inline uint32_t vx_team_rank() {
   return __team_rank_y * __team_size_x + __team_rank_x;
@@ -203,6 +227,32 @@ inline void vx_team_tensor_mma_panel(uint32_t a_panel_offset,
   csr_write(VX_CSR_TEAM_TENSOR_B_STRIDE, b_stride);
   csr_write(VX_CSR_TEAM_TENSOR_K_TILES, k_tiles);
   csr_write(VX_CSR_TEAM_TENSOR_RUN, n_tiles);
+}
+
+inline void vx_team_tensor_set_panel_seeds(uint32_t a_seed, uint32_t b_seed) {
+  csr_write(VX_CSR_TEAM_TENSOR_A_SEED, a_seed);
+  csr_write(VX_CSR_TEAM_TENSOR_B_SEED, b_seed);
+}
+
+inline void vx_team_tensor_set_panel_words(uint32_t a_word0, uint32_t a_word1,
+                                           uint32_t b_word0, uint32_t b_word1) {
+  csr_write(VX_CSR_TEAM_TENSOR_A_WORD0, a_word0);
+  csr_write(VX_CSR_TEAM_TENSOR_A_WORD1, a_word1);
+  csr_write(VX_CSR_TEAM_TENSOR_B_WORD0, b_word0);
+  csr_write(VX_CSR_TEAM_TENSOR_B_WORD1, b_word1);
+}
+
+inline void vx_team_tensor_set_panel_word_addrs(uint32_t a_word0_addr, uint32_t a_word1_addr,
+                                                uint32_t b_word0_addr, uint32_t b_word1_addr) {
+  vx_team_tensor_set_panel_words(a_word0_addr, a_word1_addr, b_word0_addr, b_word1_addr);
+}
+
+inline void vx_team_tensor_status_select(uint32_t sel) {
+  csr_write(VX_CSR_TEAM_TENSOR_STATUS_SEL, sel);
+}
+
+inline uint32_t vx_team_tensor_status() {
+  return csr_read(VX_CSR_TEAM_TENSOR_STATUS);
 }
 
 inline void vx_team_set_copy(uint32_t src_offset, uint32_t copy_size, uint32_t dst_mask) {

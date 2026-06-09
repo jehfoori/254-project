@@ -65,6 +65,163 @@ static uint32_t env_u32(const char* name, uint32_t default_value) {
   return strtoul(value, nullptr, 0);
 }
 
+static uint32_t rtl_seed_mix(uint32_t acc, uint32_t value, uint32_t index) {
+  acc ^= value + 0x9e3779b9u + (index << 6) + (index >> 2);
+  acc = (acc << 7) | (acc >> 25);
+  return acc * 0x45d9f3bu;
+}
+
+static uint32_t rtl_panel_seed_a(const std::vector<itype_t>& A,
+                                 uint32_t K, uint32_t tile_row, uint32_t m_tile) {
+  uint32_t seed = 0x13579bdu;
+  uint32_t row_base = tile_row + m_tile * cfg::tileM;
+  uint32_t span_k = PANEL_K_TILES * cfg::tileK;
+  uint32_t index = 0;
+  for (uint32_t m = 0; m < cfg::tileM; ++m) {
+    for (uint32_t k = 0; k < span_k; ++k) {
+      seed = rtl_seed_mix(seed, uint32_t(A[(row_base + m) * K + k]), index++);
+    }
+  }
+  return seed;
+}
+
+static uint32_t rtl_panel_seed_b(const std::vector<itype_t>& B,
+                                 uint32_t N, uint32_t tile_col) {
+  uint32_t seed = 0x2468aceu;
+  uint32_t span_k = PANEL_K_TILES * cfg::tileK;
+  uint32_t strip_n = COOP_N_TILES * cfg::tileN;
+  uint32_t index = 0;
+  for (uint32_t k = 0; k < span_k; ++k) {
+    for (uint32_t n = 0; n < strip_n; ++n) {
+      seed = rtl_seed_mix(seed, uint32_t(B[k * N + tile_col + n]), index++);
+    }
+  }
+  return seed;
+}
+
+static uint32_t pack_words(uint16_t lo, uint16_t hi) {
+  return uint32_t(lo) | (uint32_t(hi) << 16);
+}
+
+static uint32_t rtl_panel_word_a0_addr(uint32_t A_addr,
+                                       uint32_t K, uint32_t tile_row, uint32_t m_tile) {
+  uint32_t row_base = tile_row + m_tile * cfg::tileM;
+  return A_addr + sizeof(itype_t) * (row_base * K);
+}
+
+static uint32_t rtl_panel_word_b0_addr(uint32_t B_addr,
+                                       uint32_t N, uint32_t tile_col) {
+  (void)N;
+  return B_addr + sizeof(itype_t) * tile_col;
+}
+
+static uint32_t rtl_stub_expected_accum(uint32_t a_offset, uint32_t b_offset,
+                                        uint32_t a_stride, uint32_t b_stride,
+                                        uint32_t a_seed, uint32_t b_seed,
+                                        const std::vector<itype_t>& A,
+                                        const std::vector<itype_t>& B,
+                                        uint32_t A_addr,
+                                        uint32_t B_addr,
+                                        uint32_t a_panel_base_addr,
+                                        uint32_t b_panel_base_addr,
+                                        uint32_t c_stride,
+                                        uint32_t k_tiles, uint32_t n_tiles) {
+  const uint32_t tile_m = cfg::tileM;
+  const uint32_t tile_n = cfg::tileN;
+  const uint32_t tile_k = cfg::tileK;
+  const uint32_t a_words_per_row = a_stride / 2;
+  const uint32_t b_words_per_row = b_stride / 2;
+  uint32_t accum = 0;
+  uint32_t k_idx = 0;
+  uint32_t n_idx = 0;
+  uint32_t total = k_tiles * n_tiles;
+  for (uint32_t step = 0; step < total; ++step) {
+    uint32_t a_row0 = 0;
+    uint32_t a_row_last = tile_m - 1;
+    uint32_t b_row0 = k_idx * tile_k;
+    uint32_t b_row_last = b_row0 + (tile_k - 1);
+    uint32_t b_col_word = n_idx * (tile_n / 2);
+    uint32_t a_word0_index = a_row0 * a_words_per_row + k_idx * (tile_k / 2);
+    uint32_t a_word1_index = a_row_last * a_words_per_row + k_idx * (tile_k / 2) + ((tile_k / 2) - 1);
+    uint32_t b_word0_index = b_row0 * b_words_per_row + b_col_word;
+    uint32_t b_word1_index = b_row_last * b_words_per_row + b_col_word + 1;
+    uint32_t a_word0_addr = a_panel_base_addr + sizeof(itype_t) * (a_word0_index * 2);
+    uint32_t a_word1_addr = a_panel_base_addr + sizeof(itype_t) * (a_word1_index * 2);
+    uint32_t b_word0_addr = b_panel_base_addr
+                          + sizeof(itype_t) * ((b_word0_index / b_words_per_row) * c_stride
+                                             + ((b_word0_index % b_words_per_row) * 2));
+    uint32_t b_word1_addr = b_panel_base_addr
+                          + sizeof(itype_t) * ((b_word1_index / b_words_per_row) * c_stride
+                                             + ((b_word1_index % b_words_per_row) * 2));
+    uint32_t panel_a_word0 = pack_words(
+      uint16_t(A[(a_word0_addr - A_addr) / sizeof(itype_t) + 0]),
+      uint16_t(A[(a_word0_addr - A_addr) / sizeof(itype_t) + 1]));
+    uint32_t panel_a_word1 = pack_words(
+      uint16_t(A[(a_word1_addr - A_addr) / sizeof(itype_t) + 0]),
+      uint16_t(A[(a_word1_addr - A_addr) / sizeof(itype_t) + 1]));
+    uint32_t panel_b_word0 = pack_words(
+      uint16_t(B[(b_word0_addr - B_addr) / sizeof(itype_t) + 0]),
+      uint16_t(B[(b_word0_addr - B_addr) / sizeof(itype_t) + 1]));
+    uint32_t panel_b_word1 = pack_words(
+      uint16_t(B[(b_word1_addr - B_addr) / sizeof(itype_t) + 0]),
+      uint16_t(B[(b_word1_addr - B_addr) / sizeof(itype_t) + 1]));
+    uint32_t synth_mac = (uint32_t(panel_a_word0 & 0xffffu) * uint32_t(panel_b_word0 & 0xffffu))
+                       + (uint32_t(panel_a_word0 >> 16) * uint32_t(panel_b_word0 >> 16))
+                       + (uint32_t(panel_a_word1 & 0xffffu) * uint32_t(panel_b_word1 & 0xffffu))
+                       + (uint32_t(panel_a_word1 >> 16) * uint32_t(panel_b_word1 >> 16))
+                       + (k_tiles << 3)
+                       + (n_tiles << 1)
+                       + (k_idx << 4)
+                       + (n_idx << 6);
+    accum += synth_mac;
+    if (step + 1 < total) {
+      if (k_idx + 1 < k_tiles) {
+        ++k_idx;
+      } else {
+        k_idx = 0;
+        ++n_idx;
+      }
+    }
+  }
+  return accum;
+}
+
+static float rtl_stub_expected_value(const std::vector<itype_t>& A,
+                                     const std::vector<itype_t>& B,
+                                     uint32_t N,
+                                     uint32_t K,
+                                     uint32_t bx,
+                                     uint32_t by,
+                                     uint32_t m_tile) {
+  uint32_t a_tile_bytes = cfg::tileM * cfg::tileK * sizeof(itype_t);
+  uint32_t a_panel_bytes = PANEL_K_TILES * cfg::tileM * cfg::tileK * COOP_M_TILES * sizeof(itype_t);
+  uint32_t b_panel_bytes = PANEL_K_TILES * cfg::tileK * cfg::tileN * COOP_N_TILES * sizeof(itype_t);
+  uint32_t team_rank_x = bx % 2;
+  uint32_t team_rank_y = by % 2;
+  uint32_t tile_row = by * COOP_M_TILES * cfg::tileM;
+  uint32_t tile_col = bx * COOP_N_TILES * cfg::tileN;
+  uint32_t a_offset = team_rank_y * a_panel_bytes + m_tile * PANEL_K_TILES * a_tile_bytes;
+  uint32_t b_offset = 2 * a_panel_bytes + team_rank_x * b_panel_bytes;
+  uint32_t a_stride = PANEL_K_TILES * cfg::tileK;
+  uint32_t b_stride = COOP_N_TILES * cfg::tileN;
+  uint32_t a_seed = rtl_panel_seed_a(A, K, tile_row, m_tile);
+  uint32_t b_seed = rtl_panel_seed_b(B, N, tile_col);
+  uint32_t a_panel_base_addr = rtl_panel_word_a0_addr(uint32_t(kernel_arg.A_addr), K, tile_row, m_tile);
+  uint32_t b_panel_base_addr = rtl_panel_word_b0_addr(uint32_t(kernel_arg.B_addr), N, tile_col);
+  uint32_t c_stride = N;
+  uint32_t total = PANEL_K_TILES * COOP_N_TILES;
+  uint32_t accum = rtl_stub_expected_accum(a_offset, b_offset, a_stride, b_stride, a_seed, b_seed,
+                                           A, B, uint32_t(kernel_arg.A_addr), uint32_t(kernel_arg.B_addr),
+                                           a_panel_base_addr, b_panel_base_addr, c_stride,
+                                           PANEL_K_TILES, COOP_N_TILES);
+  uint32_t raw = accum
+               ^ total
+               ^ (COOP_N_TILES << 8)
+               ^ (PANEL_K_TILES << 12)
+               ^ c_stride;
+  return bit_cast<float>(raw);
+}
+
 static bool compare_fp32(float actual, float expected, uint32_t index, uint32_t errors) {
   union fi_t {
     float f;
@@ -257,6 +414,7 @@ int main(int argc, char* argv[]) {
   std::cout << "cooperative N tiles: " << COOP_N_TILES << std::endl;
   std::cout << "profile stats: " << (COOP_PROFILE_STATS ? "on" : "off") << std::endl;
   std::cout << "tensor feed oracle: " << (COOP_TENSOR_FEED_ORACLE ? "on" : "off") << std::endl;
+  std::cout << "rtl tensor stub path: " << (COOP_TENSOR_RTL_STUB ? "on" : "off") << std::endl;
   if (COOP_TENSOR_FEED_ORACLE) {
     std::cout << "tensor feed latency model: desc="
               << env_u32("VORTEX_TEAM_TENSOR_DESC_LATENCY", 0)
@@ -330,15 +488,43 @@ int main(int argc, char* argv[]) {
   RT_CHECK(vx_copy_from_dev(h_stats.data(), stats_buffer, 0, stats_buf_size));
 #endif
 
+  int errors = 0;
+#if COOP_TENSOR_RTL_STUB
+  std::cout << "verify rtl stub result" << std::endl;
+  for (uint32_t by = 0; by < grid_y; ++by) {
+    for (uint32_t bx = 0; bx < grid_x; ++bx) {
+      uint32_t tile_row = by * COOP_M_TILES * cfg::tileM;
+      uint32_t tile_col = bx * COOP_N_TILES * cfg::tileN;
+      for (uint32_t m_tile = 0; m_tile < COOP_M_TILES; ++m_tile) {
+        float expected = rtl_stub_expected_value(h_A, h_B, N, K, bx, by, m_tile);
+        for (uint32_t m = 0; m < cfg::tileM; ++m) {
+          for (uint32_t n = 0; n < COOP_N_TILES * cfg::tileN; ++n) {
+            uint32_t idx = (tile_row + m_tile * cfg::tileM + m) * N + (tile_col + n);
+            if (bit_cast<uint32_t>(h_C[idx]) != bit_cast<uint32_t>(expected)) {
+              if (errors < MAX_ERRORS) {
+                std::cout << "*** rtl stub error: block (" << bx << ", " << by << ")"
+                          << " m_tile=" << m_tile
+                          << " index=" << idx
+                          << " expected=0x" << std::hex << bit_cast<uint32_t>(expected)
+                          << " actual=0x" << bit_cast<uint32_t>(h_C[idx]) << std::dec
+                          << std::endl;
+              }
+              ++errors;
+            }
+          }
+        }
+      }
+    }
+  }
+#else
   std::cout << "verify result" << std::endl;
   matmul_cpu(h_ref.data(), h_A.data(), h_B.data(), M, N, K);
-
-  int errors = 0;
   for (uint32_t i = 0; i < sizeC; ++i) {
     if (!compare_fp32(h_C[i], h_ref[i], i, errors)) {
       ++errors;
     }
   }
+#endif
 
 #if COOP_PROFILE_STATS
   uint32_t macro_grid_x = grid_x / 2;
