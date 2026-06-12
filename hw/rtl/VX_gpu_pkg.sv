@@ -127,6 +127,26 @@ package VX_gpu_pkg;
         team_copy_desc_t [1:0] copy;
     } team_csr_state_t;
 
+    typedef struct packed {
+        logic [PERF_CTR_BITS-1:0] commands;
+        logic [PERF_CTR_BITS-1:0] panels_completed;
+        logic [PERF_CTR_BITS-1:0] dcache_read_reqs;
+        logic [PERF_CTR_BITS-1:0] dcache_read_rsps;
+        logic [PERF_CTR_BITS-1:0] lmem_writes;
+        logic [PERF_CTR_BITS-1:0] busy_cycles;
+        logic [PERF_CTR_BITS-1:0] wait_slot_cycles;
+        logic [PERF_CTR_BITS-1:0] stream_cycles;
+        logic [PERF_CTR_BITS-1:0] overwrite_block_cycles;
+        logic [PERF_CTR_BITS-1:0] dcache_req_stall_cycles;
+        logic [PERF_CTR_BITS-1:0] no_free_window_cycles;
+        logic [PERF_CTR_BITS-1:0] response_wait_cycles;
+        logic [PERF_CTR_BITS-1:0] lmem_fanout_cycles;
+        logic [PERF_CTR_BITS-1:0] lmem_stall_cycles;
+        logic [PERF_CTR_BITS-1:0] drain_cycles;
+        logic [PERF_CTR_BITS-1:0] max_pending_reads;
+        logic [PERF_CTR_BITS-1:0] max_ready_backlog;
+    } dxa_perf_state_t;
+
     localparam STALL_TIMEOUT = (100000 * (1 ** (`L2_ENABLED + `L3_ENABLED)));
 
     ///////////////////////////////////////////////////////////////////////////

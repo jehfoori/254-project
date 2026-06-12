@@ -242,6 +242,7 @@ module VX_socket import VX_gpu_pkg::*; #(
 
     wire [`SOCKET_SIZE-1:0] per_core_busy;
     team_csr_state_t [`SOCKET_SIZE-1:0] per_core_team_csr_state;
+    dxa_perf_state_t team_dxa_perf_state;
 
 `ifdef GBAR_ENABLE
     VX_team_dxa_engine #(
@@ -253,6 +254,7 @@ module VX_socket import VX_gpu_pkg::*; #(
         .team_csr_state   (per_core_team_csr_state),
         .dxa_lmem_bus_if  (per_core_dxa_lmem_bus_if),
         .dxa_dcache_bus_if(dxa_dcache_bus_if),
+        .dxa_perf_state   (team_dxa_perf_state),
         .core_gbar_bus_if (per_core_gbar_bus_if),
         .gbar_bus_if      (filtered_gbar_bus_if)
     );
@@ -266,6 +268,9 @@ module VX_socket import VX_gpu_pkg::*; #(
         .bus_in_if  (filtered_gbar_bus_if),
         .bus_out_if (gbar_bus_if)
     );
+`endif
+`ifndef GBAR_ENABLE
+    assign team_dxa_perf_state = '0;
 `endif
 
     // Generate all cores
@@ -297,10 +302,11 @@ module VX_socket import VX_gpu_pkg::*; #(
 
             .icache_bus_if  (per_core_icache_bus_if[core_id]),
 
-        `ifdef GBAR_ENABLE
+    `ifdef GBAR_ENABLE
             .gbar_bus_if    (per_core_gbar_bus_if[core_id]),
-        `endif
+    `endif
 
+            .dxa_perf_state (team_dxa_perf_state),
             .team_csr_state (per_core_team_csr_state[core_id]),
 
             .busy           (per_core_busy[core_id])

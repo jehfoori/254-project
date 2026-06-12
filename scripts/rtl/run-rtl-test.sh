@@ -14,6 +14,7 @@ COOP_N_TILES=1
 PANEL_K_TILES=1
 LOCAL_BASELINE=0
 PROFILE=0
+TIMING=0
 NO_BUILD=0
 CLEAN=0
 CONFIGS="-DEXT_TCU_ENABLE -DNUM_CORES=4 -DGBAR_ENABLE"
@@ -39,6 +40,7 @@ Options:
   --panel-k-tiles N           PANEL_K_TILES for coop_sgemm_tcu (default: 1)
   --local-baseline            Use local-memory staging for sgemm_tcu
   --profile                   Enable compile-time cooperative profile stats
+  --timing                    Enable timing stats for sgemm_tcu/coop_sgemm_tcu
   --no-build                  Skip RTLSIM build step
   --clean                     Clean this regression before building/running
   --configs FLAGS             Override base CONFIGS
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --profile)
       PROFILE=1
+      shift
+      ;;
+    --timing)
+      TIMING=1
       shift
       ;;
     --no-build)
@@ -135,13 +141,22 @@ run_configs="${CONFIGS}"
 opts=""
 
 case "${TEST}" in
-  coop_lmem|coop_dxa_csr|coop_dxa_skeleton|coop_dxa_lmem_write|coop_dxa_panel_stream)
+  coop_lmem|coop_dxa_csr|coop_dxa_skeleton|coop_dxa_lmem_write)
     opts=""
+    ;;
+  coop_dxa_panel_stream)
+    opts=""
+    if [[ "${PROFILE}" -eq 1 ]]; then
+      run_configs="${run_configs} -DCOOP_DXA_HW_STATS=1"
+    fi
     ;;
   sgemm_tcu)
     opts="-m${M} -n${N} -k${K}"
     if [[ "${LOCAL_BASELINE}" -eq 1 ]]; then
       run_configs="${run_configs} -DSGEMM_TCU_USE_LMEM=1"
+    fi
+    if [[ "${TIMING}" -eq 1 ]]; then
+      run_configs="${run_configs} -DSGEMM_TCU_TIMING_STATS=1"
     fi
     ;;
   coop_sgemm_tcu)
@@ -149,6 +164,9 @@ case "${TEST}" in
     run_configs="${run_configs} -DCOOP_N_TILES=${COOP_N_TILES} -DPANEL_K_TILES=${PANEL_K_TILES}"
     if [[ "${PROFILE}" -eq 1 ]]; then
       run_configs="${run_configs} -DCOOP_PROFILE_STATS=1"
+    fi
+    if [[ "${TIMING}" -eq 1 ]]; then
+      run_configs="${run_configs} -DCOOP_PROFILE_STATS=1 -DCOOP_TIMING_STATS=1"
     fi
     ;;
 esac
@@ -173,6 +191,7 @@ if [[ "${CLEAN}" -eq 1 || "${previous_configs}" != "${run_configs}" ]]; then
     echo "CONFIGS changed for ${TEST}; cleaning stale regression artifacts"
   fi
   make clean CONFIGS="${run_configs}"
+  printf '%s\n' "${run_configs}" > "${config_stamp}"
 fi
 
 echo "running ${TEST}"

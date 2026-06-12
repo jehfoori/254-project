@@ -57,7 +57,7 @@ static float fp16_to_float(uint16_t value) {
   return bit_cast<float>(rv_htof_s(value, 0, nullptr));
 }
 
-static bool compare_fp32(float actual, float expected, uint32_t index, uint32_t errors) {
+static int32_t fp32_ulp_delta(float actual, float expected) {
   union fi_t {
     float f;
     int32_t i;
@@ -65,11 +65,28 @@ static bool compare_fp32(float actual, float expected, uint32_t index, uint32_t 
   fi_t fa, fb;
   fa.f = actual;
   fb.f = expected;
-  auto d = std::abs(fa.i - fb.i);
+  return std::abs(fa.i - fb.i);
+}
+
+static uint32_t fp32_bits(float value) {
+  union fi_t {
+    float f;
+    uint32_t i;
+  };
+  fi_t v;
+  v.f = value;
+  return v.i;
+}
+
+static bool compare_fp32(float actual, float expected, uint32_t index, uint32_t errors) {
+  auto d = fp32_ulp_delta(actual, expected);
   if (d > FLOAT_ULP) {
     if (errors < MAX_ERRORS) {
       std::cout << "*** error: [" << index << "] expected=" << expected
-                << ", actual=" << actual << std::endl;
+                << " (0x" << std::hex << fp32_bits(expected) << ")"
+                << ", actual=" << std::dec << actual
+                << " (0x" << std::hex << fp32_bits(actual) << ")"
+                << std::dec << ", ulp=" << d << std::endl;
     }
     return false;
   }
@@ -300,11 +317,26 @@ int main(int argc, char* argv[]) {
   matmul_cpu(h_ref.data(), h_A.data(), h_B.data(), M, N, K);
 
   int errors = 0;
+  int32_t max_ulp_delta = 0;
+  uint32_t max_ulp_index = 0;
+  uint32_t max_ulp_expected_bits = 0;
+  uint32_t max_ulp_actual_bits = 0;
   for (uint32_t i = 0; i < sizeC; ++i) {
+    auto ulp_delta = fp32_ulp_delta(h_C[i], h_ref[i]);
+    if (ulp_delta > max_ulp_delta) {
+      max_ulp_delta = ulp_delta;
+      max_ulp_index = i;
+      max_ulp_expected_bits = fp32_bits(h_ref[i]);
+      max_ulp_actual_bits = fp32_bits(h_C[i]);
+    }
     if (!compare_fp32(h_C[i], h_ref[i], i, errors)) {
       ++errors;
     }
   }
+  std::cout << "max ULP delta: " << max_ulp_delta
+            << " at index " << max_ulp_index
+            << " expected_bits=0x" << std::hex << max_ulp_expected_bits
+            << " actual_bits=0x" << max_ulp_actual_bits << std::dec << std::endl;
 
 #if COOP_PROFILE_STATS
   uint32_t macro_grid_x = grid_x / 2;
@@ -321,6 +353,13 @@ int main(int argc, char* argv[]) {
   uint32_t total_panel_read_bytes = 0;
   uint32_t total_mma_steps = 0;
   uint32_t total_partial_panels = 0;
+#if COOP_TIMING_STATS
+  uint64_t total_timing_total_cycles = 0;
+  uint64_t total_timing_dxa_wait_cycles = 0;
+  uint64_t total_timing_panel_load_cycles = 0;
+  uint64_t total_timing_mma_cycles = 0;
+  uint64_t total_timing_store_cycles = 0;
+#endif
   uint32_t has_partial_panel = ((num_k_tiles % PANEL_K_TILES) != 0) ? 1 : 0;
 
   for (uint32_t by = 0; by < grid_y; ++by) {
@@ -387,6 +426,13 @@ int main(int argc, char* argv[]) {
       total_panel_read_bytes += stats.panel_read_bytes;
       total_mma_steps += stats.mma_steps;
       total_partial_panels += stats.partial_panels;
+#if COOP_TIMING_STATS
+      total_timing_total_cycles += stats.timing_total_cycles;
+      total_timing_dxa_wait_cycles += stats.timing_dxa_wait_cycles;
+      total_timing_panel_load_cycles += stats.timing_panel_load_cycles;
+      total_timing_mma_cycles += stats.timing_mma_cycles;
+      total_timing_store_cycles += stats.timing_store_cycles;
+#endif
     }
   }
 
@@ -411,6 +457,13 @@ int main(int argc, char* argv[]) {
     std::cout << "mma steps per dxa command: "
               << double(total_mma_steps) / double(total_dxa_commands) << std::endl;
   }
+#if COOP_TIMING_STATS
+  std::cout << "timing total cycles: " << total_timing_total_cycles << std::endl;
+  std::cout << "timing dxa wait cycles: " << total_timing_dxa_wait_cycles << std::endl;
+  std::cout << "timing panel load cycles: " << total_timing_panel_load_cycles << std::endl;
+  std::cout << "timing mma cycles: " << total_timing_mma_cycles << std::endl;
+  std::cout << "timing store cycles: " << total_timing_store_cycles << std::endl;
+#endif
 #endif
 
   std::cout << "cleanup" << std::endl;

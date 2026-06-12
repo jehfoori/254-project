@@ -63,6 +63,12 @@ typedef void (*vx_serial_cb)(void *arg);
 #define VX_TEAM_COPY_MODE_GLOBAL 1u
 #define VX_TEAM_COPY_MODE_PANEL 2u
 #define VX_TEAM_COPY_MODE_DXA_STREAM 4u
+#ifndef VX_CSR_TEAM_DXA_STAT_SEL
+#define VX_CSR_TEAM_DXA_STAT_SEL 0xFD3
+#endif
+#ifndef VX_CSR_TEAM_DXA_STAT
+#define VX_CSR_TEAM_DXA_STAT 0xFD4
+#endif
 // SimX reserves this local-memory window for team-shared panel reads.
 #ifndef VX_TEAM_PANEL_OFFSET
 #define VX_TEAM_PANEL_OFFSET 0x2000u
@@ -200,6 +206,32 @@ inline void vx_team_dxa_start() {
 inline void vx_team_dxa_wait_slot(uint32_t slot) {
   vx_barrier(slot == 0 ? VX_TEAM_DXA_WAIT_SLOT0_ID : VX_TEAM_DXA_WAIT_SLOT1_ID,
              vx_team_size());
+}
+
+enum {
+  VX_TEAM_DXA_STAT_COMMANDS = 0,
+  VX_TEAM_DXA_STAT_PANELS_COMPLETED = 1,
+  VX_TEAM_DXA_STAT_DCACHE_READ_REQS = 2,
+  VX_TEAM_DXA_STAT_DCACHE_READ_RSPS = 3,
+  VX_TEAM_DXA_STAT_LMEM_WRITES = 4,
+  VX_TEAM_DXA_STAT_BUSY_CYCLES = 5,
+  VX_TEAM_DXA_STAT_WAIT_SLOT_CYCLES = 6,
+  VX_TEAM_DXA_STAT_STREAM_CYCLES = 7,
+  VX_TEAM_DXA_STAT_OVERWRITE_BLOCK_CYCLES = 8,
+  VX_TEAM_DXA_STAT_DCACHE_REQ_STALL_CYCLES = 9,
+  VX_TEAM_DXA_STAT_NO_FREE_WINDOW_CYCLES = 10,
+  VX_TEAM_DXA_STAT_RESPONSE_WAIT_CYCLES = 11,
+  VX_TEAM_DXA_STAT_LMEM_FANOUT_CYCLES = 12,
+  VX_TEAM_DXA_STAT_LMEM_STALL_CYCLES = 13,
+  VX_TEAM_DXA_STAT_DRAIN_CYCLES = 14,
+  VX_TEAM_DXA_STAT_MAX_PENDING_READS = 15,
+  VX_TEAM_DXA_STAT_MAX_READY_BACKLOG = 16,
+  VX_TEAM_DXA_STAT_COUNT = 17,
+};
+
+inline uint64_t vx_team_dxa_stat_read(uint32_t selector) {
+  csr_write(VX_CSR_TEAM_DXA_STAT_SEL, selector);
+  return csr_read(VX_CSR_TEAM_DXA_STAT);
 }
 
 // launch a kernel function with a grid of blocks and block of threads

@@ -229,5 +229,7 @@
 `define VX_CSR_TEAM_GLOBAL_ADDR_1       12'hFD0
 `define VX_CSR_TEAM_TILE_ROWS           12'hFD1
 `define VX_CSR_TEAM_GLOBAL_STRIDE       12'hFD2
+`define VX_CSR_TEAM_DXA_STAT_SEL        12'hFD3
+`define VX_CSR_TEAM_DXA_STAT            12'hFD4
 
 `endif // VX_TYPES_VH

@@ -28,7 +28,11 @@
 #endif
 
 #ifndef COOP_PROFILE_STATS
-#define COOP_PROFILE_STATS 1
+#define COOP_PROFILE_STATS 0
+#endif
+
+#ifndef COOP_TIMING_STATS
+#define COOP_TIMING_STATS 0
 #endif
 
 typedef struct {
@@ -47,6 +51,13 @@ typedef struct {
   uint32_t panel_read_bytes;
   uint32_t mma_steps;
   uint32_t partial_panels;
+#if COOP_TIMING_STATS
+  uint64_t timing_total_cycles;
+  uint64_t timing_dxa_wait_cycles;
+  uint64_t timing_panel_load_cycles;
+  uint64_t timing_mma_cycles;
+  uint64_t timing_store_cycles;
+#endif
 } block_stats_t;
 
 typedef struct {

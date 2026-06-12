@@ -25,6 +25,8 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
     VX_mem_bus_if.master dxa_lmem_bus_if [NUM_REQS],
     VX_mem_bus_if.master dxa_dcache_bus_if,
 
+    output dxa_perf_state_t dxa_perf_state,
+
     VX_gbar_bus_if.slave  core_gbar_bus_if [NUM_REQS],
     VX_gbar_bus_if.master gbar_bus_if [NUM_REQS]
 );
@@ -36,17 +38,19 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
     localparam [31:0] VX_TEAM_COPY_MODE_DXA_STREAM = 32'd4;
     localparam DXA_PANEL_OFFSET = 32'h2000;
     localparam DXA_MAX_PANELS = 4;
+    localparam DXA_DMA_WINDOW = 4;
     localparam DXA_LMEM_ADDR_WIDTH = `MEM_ADDR_WIDTH - $clog2(LSU_WORD_SIZE);
     localparam DXA_DCACHE_ADDR_WIDTH = `MEM_ADDR_WIDTH - $clog2(DCACHE_WORD_SIZE);
+    localparam DXA_DMA_SLOT_BITS = `CLOG2(DXA_DMA_WINDOW);
+    localparam DXA_TAG_VALUE_BITS = DCACHE_TAG_WIDTH - `UP(UUID_WIDTH);
 
-    localparam DXA_STATE_IDLE      = 3'd0;
-    localparam DXA_STATE_WAIT_SLOT = 3'd1;
-    localparam DXA_STATE_READ_REQ  = 3'd2;
-    localparam DXA_STATE_READ_RSP  = 3'd3;
-    localparam DXA_STATE_WRITE     = 3'd4;
+    localparam DXA_STATE_IDLE      = 2'd0;
+    localparam DXA_STATE_WAIT_SLOT = 2'd1;
+    localparam DXA_STATE_STREAM    = 2'd2;
 
     `STATIC_ASSERT(DCACHE_WORD_SIZE >= LSU_WORD_SIZE, ("DXA v1 requires D-cache words to cover local-memory beats"))
     `STATIC_ASSERT((DCACHE_WORD_SIZE % LSU_WORD_SIZE) == 0, ("DXA v1 requires integral local-memory beats per D-cache word"))
+    `STATIC_ASSERT(DXA_TAG_VALUE_BITS >= DXA_DMA_SLOT_BITS, ("DXA DMA window does not fit D-cache tag value"))
 
     function automatic logic is_dxa_barrier(input logic [31:0] raw_id);
         begin
@@ -62,6 +66,16 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
             count_mask = 0;
             for (i = 0; i < `NUM_CORES; ++i) begin
                 count_mask = count_mask + integer'(mask[i]);
+            end
+        end
+    endfunction
+
+    function automatic integer count_dma_entries(input logic [DXA_DMA_WINDOW-1:0] mask);
+        integer i;
+        begin
+            count_dma_entries = 0;
+            for (i = 0; i < DXA_DMA_WINDOW; ++i) begin
+                count_dma_entries = count_dma_entries + integer'(mask[i]);
             end
         end
     endfunction
@@ -86,14 +100,23 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
     reg dxa_rsp_valid;
     reg [NB_WIDTH-1:0] dxa_rsp_id;
 
-    reg [2:0] dxa_state;
-    reg current_copy;
-    reg [31:0] current_panel;
-    reg [31:0] current_group;
-    reg [31:0] current_row;
-    reg [31:0] current_byte;
-    reg [`CLOG2(NUM_REQS)-1:0] write_core;
-    reg [(LSU_WORD_SIZE * 8)-1:0] read_word;
+    reg [1:0] dxa_state;
+    reg issue_copy;
+    reg [31:0] issue_panel;
+    reg [31:0] issue_group;
+    reg [31:0] issue_row;
+    reg [31:0] issue_byte;
+    reg issue_done;
+
+    reg [DXA_DMA_WINDOW-1:0] dma_pending;
+    reg [DXA_DMA_WINDOW-1:0] dma_ready;
+    reg [31:0] dma_panel [DXA_DMA_WINDOW];
+    reg [NUM_REQS-1:0] dma_target_mask [DXA_DMA_WINDOW];
+    reg [DXA_LMEM_ADDR_WIDTH-1:0] dma_lmem_word_addr [DXA_DMA_WINDOW];
+    reg [$clog2(DCACHE_WORD_SIZE * 8)-1:0] dma_dcache_bit_offset [DXA_DMA_WINDOW];
+    reg [(LSU_WORD_SIZE * 8)-1:0] dma_read_word [DXA_DMA_WINDOW];
+    reg [`CLOG2(NUM_REQS)-1:0] dma_write_core [DXA_DMA_WINDOW];
+    dxa_perf_state_t perf_state;
 
     wire [NUM_REQS-1:0] core_req_valid;
     wire [NUM_REQS-1:0] core_req_is_dxa;
@@ -191,68 +214,144 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
         end
     endfunction
 
-    wire current_panel_slot = current_panel[0];
-    wire current_desc_nonzero = latched_leader_copy[current_copy].copy_size != 0;
-    wire current_desc_stream = latched_leader_copy[current_copy].copy_mode == VX_TEAM_COPY_MODE_DXA_STREAM;
-    wire [31:0] current_tile_rows = latched_leader_copy[current_copy].tile_rows;
-    wire [31:0] current_global_stride = latched_leader_copy[current_copy].global_stride;
-    wire [31:0] current_copy_size = latched_leader_copy[current_copy].copy_size;
-    wire [31:0] current_row_bytes = (current_tile_rows != 0) ? (current_copy_size / current_tile_rows) : 32'd0;
-    wire [31:0] current_group_count = current_copy ? 32'(latched_team_size_x) : 32'(latched_team_size_y);
-    wire current_desc_supported = !current_desc_nonzero
-                               || (current_desc_stream
-                                && (latched_panel_count >= 1)
-                                && (latched_panel_count <= DXA_MAX_PANELS)
-                                && (current_tile_rows != 0)
-                                && (current_global_stride != 0)
-                                && ((current_copy_size % current_tile_rows) == 0)
-                                && ((current_row_bytes % LSU_WORD_SIZE) == 0)
-                                && (current_group_count != 0)
-                                && (current_group < current_group_count)
-                                && (latched_leader_copy[current_copy].src_offset[$clog2(LSU_WORD_SIZE)-1:0] == '0));
+    wire issue_panel_slot = issue_panel[0];
+    wire issue_desc_nonzero = latched_leader_copy[issue_copy].copy_size != 0;
+    wire issue_desc_stream = latched_leader_copy[issue_copy].copy_mode == VX_TEAM_COPY_MODE_DXA_STREAM;
+    wire [31:0] issue_tile_rows = latched_leader_copy[issue_copy].tile_rows;
+    wire [31:0] issue_global_stride = latched_leader_copy[issue_copy].global_stride;
+    wire [31:0] issue_copy_size = latched_leader_copy[issue_copy].copy_size;
+    wire [31:0] issue_row_bytes = (issue_tile_rows != 0) ? (issue_copy_size / issue_tile_rows) : 32'd0;
+    wire [31:0] issue_group_count = issue_copy ? 32'(latched_team_size_x) : 32'(latched_team_size_y);
+    wire issue_desc_supported = !issue_desc_nonzero
+                             || (issue_desc_stream
+                              && (latched_panel_count >= 1)
+                              && (latched_panel_count <= DXA_MAX_PANELS)
+                              && (issue_tile_rows != 0)
+                              && (issue_global_stride != 0)
+                              && ((issue_copy_size % issue_tile_rows) == 0)
+                              && ((issue_row_bytes % LSU_WORD_SIZE) == 0)
+                              && (issue_group_count != 0)
+                              && (issue_group < issue_group_count)
+                              && (latched_leader_copy[issue_copy].src_offset[$clog2(LSU_WORD_SIZE)-1:0] == '0));
 
-    wire [63:0] current_group_global_offset =
-        current_copy ? (64'(current_panel) * 64'(current_tile_rows) * 64'(current_global_stride)
-                      + 64'(current_group) * 64'(current_row_bytes))
-                     : (64'(current_panel) * 64'(current_row_bytes)
-                      + 64'(current_group) * 64'(current_tile_rows) * 64'(current_global_stride));
-    wire [63:0] current_global_byte_addr = 64'(latched_leader_copy[current_copy].global_addr)
-                                         + current_group_global_offset
-                                         + 64'(current_row) * 64'(current_global_stride)
-                                         + 64'(current_byte);
-    wire [63:0] current_lmem_byte_offset = 64'(DXA_PANEL_OFFSET)
-                                         + 64'(latched_leader_copy[current_copy].src_offset)
-                                         + (current_panel_slot ? 64'(panel_slot_bytes) : 64'd0)
-                                         + 64'(current_group) * 64'(current_copy_size)
-                                         + 64'(current_row) * 64'(current_row_bytes)
-                                         + 64'(current_byte);
+    wire [63:0] issue_group_global_offset =
+        issue_copy ? (64'(issue_panel) * 64'(issue_tile_rows) * 64'(issue_global_stride)
+                    + 64'(issue_group) * 64'(issue_row_bytes))
+                   : (64'(issue_panel) * 64'(issue_row_bytes)
+                    + 64'(issue_group) * 64'(issue_tile_rows) * 64'(issue_global_stride));
+    wire [63:0] issue_global_byte_addr = 64'(latched_leader_copy[issue_copy].global_addr)
+                                       + issue_group_global_offset
+                                       + 64'(issue_row) * 64'(issue_global_stride)
+                                       + 64'(issue_byte);
+    wire [63:0] issue_lmem_byte_offset = 64'(DXA_PANEL_OFFSET)
+                                       + 64'(latched_leader_copy[issue_copy].src_offset)
+                                       + (issue_panel_slot ? 64'(panel_slot_bytes) : 64'd0)
+                                       + 64'(issue_group) * 64'(issue_copy_size)
+                                       + 64'(issue_row) * 64'(issue_row_bytes)
+                                       + 64'(issue_byte);
 
-    wire current_core_active = dxa_active_mask[write_core];
-    wire current_core_match = current_core_active
-                           && (current_copy ? (32'(latched_rank_x[write_core]) == current_group)
-                                            : (32'(latched_rank_y[write_core]) == current_group));
-    wire [DXA_LMEM_ADDR_WIDTH-1:0] current_lmem_word_addr =
-        DXA_LMEM_ADDR_WIDTH'(current_lmem_byte_offset >> $clog2(LSU_WORD_SIZE));
-    wire [DXA_DCACHE_ADDR_WIDTH-1:0] current_dcache_word_addr =
-        DXA_DCACHE_ADDR_WIDTH'(current_global_byte_addr >> $clog2(DCACHE_WORD_SIZE));
-    wire [$clog2(DCACHE_WORD_SIZE)-1:0] current_dcache_byte_offset =
-        current_global_byte_addr[$clog2(DCACHE_WORD_SIZE)-1:0];
-    wire [$clog2(DCACHE_WORD_SIZE * 8)-1:0] current_dcache_bit_offset =
-        ($clog2(DCACHE_WORD_SIZE * 8))'(current_dcache_byte_offset) << 3;
-    wire current_global_lsu_aligned = current_global_byte_addr[$clog2(LSU_WORD_SIZE)-1:0] == '0;
+    wire [DXA_LMEM_ADDR_WIDTH-1:0] issue_lmem_word_addr =
+        DXA_LMEM_ADDR_WIDTH'(issue_lmem_byte_offset >> $clog2(LSU_WORD_SIZE));
+    wire [DXA_DCACHE_ADDR_WIDTH-1:0] issue_dcache_word_addr =
+        DXA_DCACHE_ADDR_WIDTH'(issue_global_byte_addr >> $clog2(DCACHE_WORD_SIZE));
+    wire [$clog2(DCACHE_WORD_SIZE)-1:0] issue_dcache_byte_offset =
+        issue_global_byte_addr[$clog2(DCACHE_WORD_SIZE)-1:0];
+    wire [$clog2(DCACHE_WORD_SIZE * 8)-1:0] issue_dcache_bit_offset =
+        ($clog2(DCACHE_WORD_SIZE * 8))'(issue_dcache_byte_offset) << 3;
+    wire issue_global_lsu_aligned = issue_global_byte_addr[$clog2(LSU_WORD_SIZE)-1:0] == '0;
+
+    reg [NUM_REQS-1:0] issue_target_mask;
+    always @(*) begin
+        issue_target_mask = '0;
+        for (integer i = 0; i < NUM_REQS; ++i) begin
+            issue_target_mask[i] = dxa_active_mask[i]
+                                && (issue_copy ? (32'(latched_rank_x[i]) == issue_group)
+                                               : (32'(latched_rank_y[i]) == issue_group));
+        end
+    end
+
+    reg dma_free_valid;
+    reg [DXA_DMA_SLOT_BITS-1:0] dma_free_slot;
+    always @(*) begin
+        dma_free_valid = 0;
+        dma_free_slot = '0;
+        for (integer i = 0; i < DXA_DMA_WINDOW; ++i) begin
+            if (!dma_free_valid && !dma_pending[i] && !dma_ready[i]) begin
+                dma_free_valid = 1;
+                dma_free_slot = DXA_DMA_SLOT_BITS'(i);
+            end
+        end
+    end
+
+    reg dma_write_valid;
+    reg [DXA_DMA_SLOT_BITS-1:0] dma_write_slot;
+    always @(*) begin
+        dma_write_valid = 0;
+        dma_write_slot = '0;
+        for (integer i = 0; i < DXA_DMA_WINDOW; ++i) begin
+            if (!dma_write_valid && dma_ready[i]) begin
+                dma_write_valid = 1;
+                dma_write_slot = DXA_DMA_SLOT_BITS'(i);
+            end
+        end
+    end
+
+    wire [DXA_DMA_SLOT_BITS-1:0] dma_rsp_slot =
+        DXA_DMA_SLOT_BITS'(dxa_dcache_bus_if.rsp_data.tag.value);
+    wire dma_rsp_slot_pending = dma_pending[dma_rsp_slot];
+    wire dma_rsp_fire = dxa_dcache_bus_if.rsp_valid && dxa_dcache_bus_if.rsp_ready;
+
     wire [NUM_REQS-1:0] dxa_lmem_req_ready;
-    wire current_write_ready = dxa_lmem_req_ready[write_core];
-    wire current_write_fire = (dxa_state == DXA_STATE_WRITE) && current_core_match && current_write_ready;
-    wire current_write_skip = (dxa_state == DXA_STATE_WRITE) && !current_core_match;
-    wire current_write_step = current_write_fire || current_write_skip;
-    wire dxa_dcache_req_fire = dxa_dcache_bus_if.req_valid && dxa_dcache_bus_if.req_ready;
-    wire dxa_dcache_rsp_fire = dxa_dcache_bus_if.rsp_valid && dxa_dcache_bus_if.rsp_ready;
+    wire dma_write_core_match = dma_write_valid && dma_target_mask[dma_write_slot][dma_write_core[dma_write_slot]];
+    wire dma_write_ready = dma_write_valid && dxa_lmem_req_ready[dma_write_core[dma_write_slot]];
+    wire dma_write_fire = dma_write_core_match && dma_write_ready;
+    wire dma_write_skip = dma_write_valid && !dma_write_core_match;
+    wire dma_write_step = dma_write_fire || dma_write_skip;
 
-    `RUNTIME_ASSERT(~((dxa_state == DXA_STATE_READ_REQ) && current_desc_nonzero && !current_desc_supported),
+    wire dxa_dcache_req_valid = (dxa_state == DXA_STATE_STREAM)
+                             && !issue_done
+                             && issue_desc_nonzero
+                             && issue_desc_supported
+                             && issue_global_lsu_aligned
+                             && dma_free_valid;
+    wire dxa_dcache_req_fire = dxa_dcache_bus_if.req_valid && dxa_dcache_bus_if.req_ready;
+
+    reg dma_any_busy;
+    reg dma_panel_mismatch;
+    always @(*) begin
+        dma_any_busy = 0;
+        dma_panel_mismatch = 0;
+        for (integer i = 0; i < DXA_DMA_WINDOW; ++i) begin
+            if (dma_pending[i] || dma_ready[i]) begin
+                dma_any_busy = 1;
+                if (dma_panel[i] != issue_panel) begin
+                    dma_panel_mismatch = 1;
+                end
+            end
+        end
+    end
+    wire dma_stream_drained = issue_done && !dma_any_busy;
+    wire dxa_engine_busy = (dxa_state != DXA_STATE_IDLE) || (| start_mask) || (| wait_mask[0]) || (| wait_mask[1]);
+    wire dxa_wait_slot_blocked = (dxa_state == DXA_STATE_WAIT_SLOT)
+                              && (issue_panel < latched_panel_count)
+                              && !slot_can_overwrite(issue_panel[0]);
+    wire dxa_response_wait = (dxa_state == DXA_STATE_STREAM)
+                          && (| dma_pending)
+                          && !dma_rsp_fire;
+    wire dxa_lmem_fanout_stall = dma_write_valid && dma_write_core_match && !dma_write_ready;
+
+    assign dxa_perf_state = perf_state;
+
+    `RUNTIME_ASSERT(~((dxa_state == DXA_STATE_STREAM) && !issue_done && issue_desc_nonzero && !issue_desc_supported),
         ("%t: *** %s unsupported DXA descriptor: copy=%0d size=%0d rows=%0d stride=%0d panels=%0d",
-         $time, INSTANCE_ID, current_copy, current_copy_size, current_tile_rows, current_global_stride, latched_panel_count))
-    `RUNTIME_ASSERT(~((dxa_state == DXA_STATE_READ_REQ) && current_desc_nonzero && !current_global_lsu_aligned),
-        ("%t: *** %s unaligned DXA global address: 0x%0h", $time, INSTANCE_ID, current_global_byte_addr))
+         $time, INSTANCE_ID, issue_copy, issue_copy_size, issue_tile_rows, issue_global_stride, latched_panel_count))
+    `RUNTIME_ASSERT(~((dxa_state == DXA_STATE_STREAM) && !issue_done && issue_desc_nonzero && !issue_global_lsu_aligned),
+        ("%t: *** %s unaligned DXA global address: 0x%0h", $time, INSTANCE_ID, issue_global_byte_addr))
+    `RUNTIME_ASSERT(~(dxa_dcache_bus_if.rsp_valid && !dma_rsp_slot_pending),
+        ("%t: *** %s unexpected DXA D-cache response tag: value=0x%0h",
+         $time, INSTANCE_ID, dxa_dcache_bus_if.rsp_data.tag.value))
+    `RUNTIME_ASSERT(~((dxa_state == DXA_STATE_STREAM) && dma_panel_mismatch),
+        ("%t: *** %s DXA DMA window has entries from multiple panels", $time, INSTANCE_ID))
 
     for (genvar i = 0; i < NUM_REQS; ++i) begin : g_gbar_filter
         wire is_selected_dxa_req = dxa_req_valid && (`CLOG2(NUM_REQS)'(i) == dxa_req_index);
@@ -269,20 +368,23 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
                                            : gbar_bus_if[i].rsp_data.id;
     end
 
-    assign dxa_dcache_bus_if.req_valid = (dxa_state == DXA_STATE_READ_REQ) && current_desc_nonzero && current_desc_supported;
+    assign dxa_dcache_bus_if.req_valid = dxa_dcache_req_valid;
     assign dxa_dcache_bus_if.req_data.rw = 1'b0;
-    assign dxa_dcache_bus_if.req_data.addr = current_dcache_word_addr;
+    assign dxa_dcache_bus_if.req_data.addr = issue_dcache_word_addr;
     assign dxa_dcache_bus_if.req_data.data = '0;
     assign dxa_dcache_bus_if.req_data.byteen = '1;
     assign dxa_dcache_bus_if.req_data.flags = '0;
-    assign dxa_dcache_bus_if.req_data.tag = '0;
-    assign dxa_dcache_bus_if.rsp_ready = (dxa_state == DXA_STATE_READ_RSP);
+    assign dxa_dcache_bus_if.req_data.tag.uuid = '0;
+    assign dxa_dcache_bus_if.req_data.tag.value = DXA_TAG_VALUE_BITS'(dma_free_slot);
+    assign dxa_dcache_bus_if.rsp_ready = dma_rsp_slot_pending && !dma_ready[dma_rsp_slot];
 
     for (genvar i = 0; i < NUM_REQS; ++i) begin : g_dxa_lmem_bus_if
-        assign dxa_lmem_bus_if[i].req_valid = (dxa_state == DXA_STATE_WRITE) && current_core_match && (`CLOG2(NUM_REQS)'(i) == write_core);
+        assign dxa_lmem_bus_if[i].req_valid = dma_write_valid
+                                           && dma_target_mask[dma_write_slot][i]
+                                           && (`CLOG2(NUM_REQS)'(i) == dma_write_core[dma_write_slot]);
         assign dxa_lmem_bus_if[i].req_data.rw = 1'b1;
-        assign dxa_lmem_bus_if[i].req_data.addr = current_lmem_word_addr;
-        assign dxa_lmem_bus_if[i].req_data.data = read_word;
+        assign dxa_lmem_bus_if[i].req_data.addr = dma_lmem_word_addr[dma_write_slot];
+        assign dxa_lmem_bus_if[i].req_data.data = dma_read_word[dma_write_slot];
         assign dxa_lmem_bus_if[i].req_data.byteen = '1;
         assign dxa_lmem_bus_if[i].req_data.flags = '0;
         assign dxa_lmem_bus_if[i].req_data.tag = '0;
@@ -309,107 +411,160 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
             dxa_rsp_valid <= 0;
             dxa_rsp_id <= '0;
             dxa_state <= DXA_STATE_IDLE;
-            current_copy <= 0;
-            current_panel <= '0;
-            current_group <= '0;
-            current_row <= '0;
-            current_byte <= '0;
-            write_core <= '0;
-            read_word <= '0;
+            issue_copy <= 0;
+            issue_panel <= '0;
+            issue_group <= '0;
+            issue_row <= '0;
+            issue_byte <= '0;
+            issue_done <= 1;
             latched_leader_copy[0] <= '0;
             latched_leader_copy[1] <= '0;
             latched_team_size_x <= '0;
             latched_team_size_y <= '0;
             latched_panel_count <= '0;
             panel_slot_bytes <= '0;
+            dma_pending <= '0;
+            dma_ready <= '0;
+            perf_state <= '0;
             for (integer i = 0; i < NUM_REQS; ++i) begin
                 next_wait_panel[i] <= '0;
                 latched_rank_x[i] <= '0;
                 latched_rank_y[i] <= '0;
             end
+            for (integer i = 0; i < DXA_DMA_WINDOW; ++i) begin
+                dma_panel[i] <= '0;
+                dma_target_mask[i] <= '0;
+                dma_lmem_word_addr[i] <= '0;
+                dma_dcache_bit_offset[i] <= '0;
+                dma_read_word[i] <= '0;
+                dma_write_core[i] <= '0;
+            end
         end else begin
+            if (dxa_engine_busy) begin
+                perf_state.busy_cycles <= perf_state.busy_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_state == DXA_STATE_WAIT_SLOT) begin
+                perf_state.wait_slot_cycles <= perf_state.wait_slot_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_state == DXA_STATE_STREAM) begin
+                perf_state.stream_cycles <= perf_state.stream_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_wait_slot_blocked) begin
+                perf_state.overwrite_block_cycles <= perf_state.overwrite_block_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_dcache_bus_if.req_valid && !dxa_dcache_bus_if.req_ready) begin
+                perf_state.dcache_req_stall_cycles <= perf_state.dcache_req_stall_cycles + PERF_CTR_BITS'(1);
+            end
+            if ((dxa_state == DXA_STATE_STREAM) && !issue_done && issue_desc_nonzero
+             && issue_desc_supported && issue_global_lsu_aligned && !dma_free_valid) begin
+                perf_state.no_free_window_cycles <= perf_state.no_free_window_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_response_wait) begin
+                perf_state.response_wait_cycles <= perf_state.response_wait_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dma_write_valid) begin
+                perf_state.lmem_fanout_cycles <= perf_state.lmem_fanout_cycles + PERF_CTR_BITS'(1);
+            end
+            if (dxa_lmem_fanout_stall) begin
+                perf_state.lmem_stall_cycles <= perf_state.lmem_stall_cycles + PERF_CTR_BITS'(1);
+            end
+            if ((dxa_state == DXA_STATE_STREAM) && issue_done && dma_any_busy) begin
+                perf_state.drain_cycles <= perf_state.drain_cycles + PERF_CTR_BITS'(1);
+            end
+            if (PERF_CTR_BITS'(count_dma_entries(dma_pending)) > perf_state.max_pending_reads) begin
+                perf_state.max_pending_reads <= PERF_CTR_BITS'(count_dma_entries(dma_pending));
+            end
+            if (PERF_CTR_BITS'(count_dma_entries(dma_ready)) > perf_state.max_ready_backlog) begin
+                perf_state.max_ready_backlog <= PERF_CTR_BITS'(count_dma_entries(dma_ready));
+            end
+
             if (dxa_rsp_fire) begin
                 dxa_rsp_valid <= 0;
                 pending_dxa_rsp <= '0;
             end
 
             if (dxa_state == DXA_STATE_WAIT_SLOT) begin
-                if ((current_panel < latched_panel_count) && slot_can_overwrite(current_panel_slot)) begin
-                    current_copy <= 0;
-                    current_group <= '0;
-                    current_row <= '0;
-                    current_byte <= '0;
-                    write_core <= '0;
-                    dxa_state <= DXA_STATE_READ_REQ;
-                end else if (current_panel >= latched_panel_count) begin
+                if ((issue_panel < latched_panel_count) && slot_can_overwrite(issue_panel[0])) begin
+                    issue_copy <= 0;
+                    issue_group <= '0;
+                    issue_row <= '0;
+                    issue_byte <= '0;
+                    issue_done <= 0;
+                    dxa_state <= DXA_STATE_STREAM;
+                end else if (issue_panel >= latched_panel_count) begin
                     dxa_state <= DXA_STATE_IDLE;
                 end
-            end else if (dxa_state == DXA_STATE_READ_REQ) begin
-                if (!current_desc_nonzero) begin
-                    if (!current_copy) begin
-                        current_copy <= 1;
+            end
+
+            if (dxa_state == DXA_STATE_STREAM) begin
+                if (!issue_done && !issue_desc_nonzero) begin
+                    if (!issue_copy) begin
+                        issue_copy <= 1;
+                        issue_group <= '0;
+                        issue_row <= '0;
+                        issue_byte <= '0;
                     end else begin
-                        slot_valid[current_panel_slot] <= 1;
-                        slot_panel[current_panel_slot] <= current_panel;
-                        if ((current_panel + 32'd1) < latched_panel_count) begin
-                            current_panel <= current_panel + 32'd1;
-                            dxa_state <= DXA_STATE_WAIT_SLOT;
-                        end else begin
-                            current_panel <= latched_panel_count;
-                            dxa_state <= DXA_STATE_IDLE;
-                        end
+                        issue_done <= 1;
                     end
                 end else if (dxa_dcache_req_fire) begin
-                    dxa_state <= DXA_STATE_READ_RSP;
-                end
-            end else if (dxa_state == DXA_STATE_READ_RSP) begin
-                if (dxa_dcache_rsp_fire) begin
-                    read_word <= dxa_dcache_bus_if.rsp_data.data[current_dcache_bit_offset +: (LSU_WORD_SIZE * 8)];
-                    dxa_state <= DXA_STATE_WRITE;
-                    write_core <= '0;
-                end
-            end else if (current_write_step) begin
-                if (write_core == `CLOG2(NUM_REQS)'(NUM_REQS-1)) begin
-                    if ((current_byte + LSU_WORD_SIZE) < current_row_bytes) begin
-                        current_byte <= current_byte + LSU_WORD_SIZE;
-                        write_core <= '0;
-                        dxa_state <= DXA_STATE_READ_REQ;
-                    end else if ((current_row + 32'd1) < current_tile_rows) begin
-                        current_byte <= '0;
-                        current_row <= current_row + 32'd1;
-                        write_core <= '0;
-                        dxa_state <= DXA_STATE_READ_REQ;
-                    end else if ((current_group + 32'd1) < current_group_count) begin
-                        current_byte <= '0;
-                        current_row <= '0;
-                        current_group <= current_group + 32'd1;
-                        write_core <= '0;
-                        dxa_state <= DXA_STATE_READ_REQ;
-                    end else if (!current_copy) begin
-                        current_byte <= '0;
-                        current_row <= '0;
-                        current_group <= '0;
-                        current_copy <= 1;
-                        write_core <= '0;
-                        dxa_state <= DXA_STATE_READ_REQ;
+                    perf_state.dcache_read_reqs <= perf_state.dcache_read_reqs + PERF_CTR_BITS'(1);
+                    dma_pending[dma_free_slot] <= 1;
+                    dma_panel[dma_free_slot] <= issue_panel;
+                    dma_target_mask[dma_free_slot] <= issue_target_mask;
+                    dma_lmem_word_addr[dma_free_slot] <= issue_lmem_word_addr;
+                    dma_dcache_bit_offset[dma_free_slot] <= issue_dcache_bit_offset;
+                    dma_write_core[dma_free_slot] <= '0;
+
+                    if ((issue_byte + LSU_WORD_SIZE) < issue_row_bytes) begin
+                        issue_byte <= issue_byte + LSU_WORD_SIZE;
+                    end else if ((issue_row + 32'd1) < issue_tile_rows) begin
+                        issue_byte <= '0;
+                        issue_row <= issue_row + 32'd1;
+                    end else if ((issue_group + 32'd1) < issue_group_count) begin
+                        issue_byte <= '0;
+                        issue_row <= '0;
+                        issue_group <= issue_group + 32'd1;
+                    end else if (!issue_copy) begin
+                        issue_byte <= '0;
+                        issue_row <= '0;
+                        issue_group <= '0;
+                        issue_copy <= 1;
                     end else begin
-                        slot_valid[current_panel_slot] <= 1;
-                        slot_panel[current_panel_slot] <= current_panel;
-                        current_byte <= '0;
-                        current_row <= '0;
-                        current_group <= '0;
-                        current_copy <= 0;
-                        write_core <= '0;
-                        if ((current_panel + 32'd1) < latched_panel_count) begin
-                            current_panel <= current_panel + 32'd1;
-                            dxa_state <= DXA_STATE_WAIT_SLOT;
-                        end else begin
-                            current_panel <= latched_panel_count;
-                            dxa_state <= DXA_STATE_IDLE;
-                        end
+                        issue_done <= 1;
                     end
-                end else begin
-                    write_core <= write_core + `CLOG2(NUM_REQS)'(1);
+                end
+
+                if (dma_rsp_fire) begin
+                    perf_state.dcache_read_rsps <= perf_state.dcache_read_rsps + PERF_CTR_BITS'(1);
+                    dma_pending[dma_rsp_slot] <= 0;
+                    dma_ready[dma_rsp_slot] <= 1;
+                    dma_read_word[dma_rsp_slot] <= dxa_dcache_bus_if.rsp_data.data[dma_dcache_bit_offset[dma_rsp_slot] +: (LSU_WORD_SIZE * 8)];
+                    dma_write_core[dma_rsp_slot] <= '0;
+                end
+
+                if (dma_write_step) begin
+                    if (dma_write_fire) begin
+                        perf_state.lmem_writes <= perf_state.lmem_writes + PERF_CTR_BITS'(1);
+                    end
+                    if (dma_write_core[dma_write_slot] == `CLOG2(NUM_REQS)'(NUM_REQS-1)) begin
+                        dma_ready[dma_write_slot] <= 0;
+                        dma_write_core[dma_write_slot] <= '0;
+                    end else begin
+                        dma_write_core[dma_write_slot] <= dma_write_core[dma_write_slot] + `CLOG2(NUM_REQS)'(1);
+                    end
+                end
+
+                if (dma_stream_drained) begin
+                    perf_state.panels_completed <= perf_state.panels_completed + PERF_CTR_BITS'(1);
+                    slot_valid[issue_panel[0]] <= 1;
+                    slot_panel[issue_panel[0]] <= issue_panel;
+                    if ((issue_panel + 32'd1) < latched_panel_count) begin
+                        issue_panel <= issue_panel + 32'd1;
+                        dxa_state <= DXA_STATE_WAIT_SLOT;
+                    end else begin
+                        issue_panel <= latched_panel_count;
+                        dxa_state <= DXA_STATE_IDLE;
+                    end
                 end
             end
 
@@ -455,14 +610,19 @@ module VX_team_dxa_engine import VX_gpu_pkg::*; #(
                         slot_panel[0] <= '0;
                         slot_panel[1] <= '0;
                         dxa_active_mask <= start_mask | (NUM_REQS'(1) << dxa_req_core_id);
+                        perf_state.commands <= perf_state.commands + PERF_CTR_BITS'(1);
                         dxa_state <= DXA_STATE_WAIT_SLOT;
-                        current_panel <= '0;
-                        current_copy <= 0;
-                        current_group <= '0;
-                        current_row <= '0;
-                        current_byte <= '0;
-                        write_core <= '0;
-                        read_word <= '0;
+                        issue_panel <= '0;
+                        issue_copy <= 0;
+                        issue_group <= '0;
+                        issue_row <= '0;
+                        issue_byte <= '0;
+                        issue_done <= 0;
+                        dma_pending <= '0;
+                        dma_ready <= '0;
+                        for (integer i = 0; i < DXA_DMA_WINDOW; ++i) begin
+                            dma_write_core[i] <= '0;
+                        end
                         for (integer i = 0; i < NUM_REQS; ++i) begin
                             next_wait_panel[i] <= '0;
                             latched_rank_x[i] <= team_csr_state[i].team_rank_x;

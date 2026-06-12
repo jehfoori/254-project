@@ -41,6 +41,7 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
     VX_commit_if.master     commit_if [`ISSUE_WIDTH],
     VX_warp_ctl_if.master   warp_ctl_if,
 
+    input dxa_perf_state_t  dxa_perf_state,
     output team_csr_state_t team_csr_state
 );
     `UNUSED_SPARAM (INSTANCE_ID)
@@ -136,6 +137,7 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
         .sched_csr_if   (sched_csr_if),
         .commit_csr_if  (commit_csr_if),
         .result_if      (pe_result_if[PE_IDX_CSRS]),
+        .dxa_perf_state (dxa_perf_state),
         .team_csr_state (team_csr_state)
     );
 

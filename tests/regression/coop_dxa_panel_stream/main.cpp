@@ -147,6 +147,33 @@ int main() {
     }
   }
 
+#if COOP_DXA_HW_STATS
+  static const char* kDxaStatNames[kDxaStatCount] = {
+    "commands",
+    "panels_completed",
+    "dcache_read_reqs",
+    "dcache_read_rsps",
+    "lmem_writes",
+    "busy_cycles",
+    "wait_slot_cycles",
+    "stream_cycles",
+    "overwrite_block_cycles",
+    "dcache_req_stall_cycles",
+    "no_free_window_cycles",
+    "response_wait_cycles",
+    "lmem_fanout_cycles",
+    "lmem_stall_cycles",
+    "drain_cycles",
+    "max_pending_reads",
+    "max_ready_backlog",
+  };
+  std::cout << "DXA hardware counters:" << std::endl;
+  const auto& stat_result = results.at(0);
+  for (uint32_t i = 0; i < kDxaStatCount; ++i) {
+    std::cout << "  " << kDxaStatNames[i] << ": " << stat_result.dxa_stats[i] << std::endl;
+  }
+#endif
+
   std::cout << "cleanup" << std::endl;
   cleanup();
 

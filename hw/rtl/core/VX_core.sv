@@ -43,6 +43,7 @@ module VX_core import VX_gpu_pkg::*; #(
     VX_gbar_bus_if.master   gbar_bus_if,
 `endif
 
+    input dxa_perf_state_t  dxa_perf_state,
     output team_csr_state_t team_csr_state,
 
     // Status
@@ -186,6 +187,7 @@ module VX_core import VX_gpu_pkg::*; #(
 
         .warp_ctl_if    (warp_ctl_if),
         .branch_ctl_if  (branch_ctl_if),
+        .dxa_perf_state (dxa_perf_state),
         .team_csr_state (team_csr_state)
     );
 

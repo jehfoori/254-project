@@ -18,6 +18,10 @@ static_assert(COOP_M_TILES >= 1, "COOP_M_TILES must be at least 1");
 #define COOP_STAT(stmt) do {} while (false)
 #endif
 
+#if COOP_TIMING_STATS && !COOP_PROFILE_STATS
+#error "COOP_TIMING_STATS requires COOP_PROFILE_STATS"
+#endif
+
 static inline uint32_t block_linear_id() {
   return blockIdx.x + blockIdx.y * gridDim.x;
 }
@@ -71,6 +75,13 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   uint32_t mma_steps = 0;
   uint32_t partial_panels = 0;
 #endif
+#if COOP_TIMING_STATS
+  uint64_t timing_total_start = csr_read(VX_CSR_MCYCLE);
+  uint64_t timing_dxa_wait_cycles = 0;
+  uint64_t timing_panel_load_cycles = 0;
+  uint64_t timing_mma_cycles = 0;
+  uint64_t timing_store_cycles = 0;
+#endif
 
   if (threadIdx.x == 0) {
     vx_team_enable_panel();
@@ -110,7 +121,13 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     if (panel_tiles != PANEL_K_TILES)
       COOP_STAT(++partial_panels);
 
+#if COOP_TIMING_STATS
+    uint64_t timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     vx_team_dxa_wait_slot(current_slot);
+#if COOP_TIMING_STATS
+    timing_dxa_wait_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
     COOP_STAT(++dxa_slot_waits);
 
     uint32_t a_copy_bytes = panel_tiles * COOP_M_TILES * a_tile_bytes;
@@ -140,16 +157,34 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     for (uint32_t panel_tile = 0; panel_tile < panel_tiles; ++panel_tile) {
       for (uint32_t n_tile = 0; n_tile < COOP_N_TILES; ++n_tile) {
         auto local_B = panel_B + panel_tile * ctx::tileK * n_strip_cols + n_tile * ctx::tileN;
+#if COOP_TIMING_STATS
+        timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
         ctx::load_matrix_sync(fragB[n_tile], local_B, n_strip_cols);
+#if COOP_TIMING_STATS
+        timing_panel_load_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
         COOP_STAT(panel_read_bytes += b_tile_bytes);
       }
       for (uint32_t m_tile = 0; m_tile < COOP_M_TILES; ++m_tile) {
         auto local_A = panel_A + m_tile * ctx::tileM * panel_tiles * ctx::tileK
                              + panel_tile * ctx::tileK;
+#if COOP_TIMING_STATS
+        timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
         ctx::load_matrix_sync(fragA, local_A, panel_a_ldm);
+#if COOP_TIMING_STATS
+        timing_panel_load_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
         COOP_STAT(panel_read_bytes += a_tile_bytes);
         for (uint32_t n_tile = 0; n_tile < COOP_N_TILES; ++n_tile) {
+#if COOP_TIMING_STATS
+          timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
           ctx::mma_sync(fragC[m_tile][n_tile], fragA, fragB[n_tile], fragC[m_tile][n_tile]);
+#if COOP_TIMING_STATS
+          timing_mma_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
           COOP_STAT(++mma_steps);
         }
       }
@@ -160,7 +195,13 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     for (uint32_t n_tile = 0; n_tile < COOP_N_TILES; ++n_tile) {
       auto pTileC = pC + (tile_row + m_tile * ctx::tileM) * N
                        + tile_col + n_tile * ctx::tileN;
+#if COOP_TIMING_STATS
+      uint64_t timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
       ctx::store_matrix_sync(pTileC, fragC[m_tile][n_tile], N);
+#if COOP_TIMING_STATS
+      timing_store_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
     }
   }
 
@@ -182,6 +223,13 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
       panel_read_bytes,
       mma_steps,
       partial_panels,
+#if COOP_TIMING_STATS
+      csr_read(VX_CSR_MCYCLE) - timing_total_start,
+      timing_dxa_wait_cycles,
+      timing_panel_load_cycles,
+      timing_mma_cycles,
+      timing_store_cycles,
+#endif
     };
   }
 #endif

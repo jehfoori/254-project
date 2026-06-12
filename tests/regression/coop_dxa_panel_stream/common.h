@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifndef COOP_DXA_HW_STATS
+#define COOP_DXA_HW_STATS 0
+#endif
+
 enum : uint32_t {
   kPanelCount = 4,
   kTeamX = 2,
@@ -15,6 +19,7 @@ enum : uint32_t {
   kBOffset = kTeamY * kCopyBytes,
   kPanelSlotBytes = kTeamY * kCopyBytes + kTeamX * kCopyBytes,
   kWordsPerCopy = kCopyBytes / sizeof(uint64_t),
+  kDxaStatCount = 17,
 };
 
 typedef struct {
@@ -33,6 +38,9 @@ typedef struct {
   uint32_t status;
   uint64_t first_actual;
   uint64_t first_expected;
+#if COOP_DXA_HW_STATS
+  uint64_t dxa_stats[kDxaStatCount];
+#endif
 } result_t;
 
 static inline uint64_t expected_value(uint32_t copy, uint32_t panel, uint32_t group, uint32_t row, uint32_t beat) {

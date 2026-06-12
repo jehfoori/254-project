@@ -151,6 +151,8 @@ module VX_core_top import VX_gpu_pkg::*; #(
 
     team_csr_state_t team_csr_state;
     `UNUSED_VAR (team_csr_state)
+    dxa_perf_state_t dxa_perf_state;
+    assign dxa_perf_state = '0;
 
     VX_core #(
         .INSTANCE_ID (`SFORMATF(("core"))),
@@ -176,6 +178,7 @@ module VX_core_top import VX_gpu_pkg::*; #(
         .gbar_bus_if    (gbar_bus_if),
     `endif
 
+        .dxa_perf_state (dxa_perf_state),
         .team_csr_state (team_csr_state),
 
         .busy           (busy)

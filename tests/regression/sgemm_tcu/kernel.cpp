@@ -9,6 +9,15 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
   auto pA = reinterpret_cast<ctx::input_t *>(arg->A_addr);
   auto pB = reinterpret_cast<ctx::input_t *>(arg->B_addr);
   auto pC = reinterpret_cast<ctx::output_t *>(arg->C_addr);
+#if SGEMM_TCU_TIMING_STATS
+  auto pStats = reinterpret_cast<timing_stats_t *>(arg->stats_addr);
+  uint64_t timing_total_start = csr_read(VX_CSR_MCYCLE);
+  uint64_t timing_stage_cycles = 0;
+  uint64_t timing_operand_load_cycles = 0;
+  uint64_t timing_mma_cycles = 0;
+  uint64_t timing_post_iter_sync_cycles = 0;
+  uint64_t timing_store_cycles = 0;
+#endif
 
   uint32_t M = arg->M;
   uint32_t N = arg->N;
@@ -42,6 +51,9 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
 
   for (int i = 0; i < K; i += ctx::tileK) {
 #if SGEMM_TCU_USE_LMEM
+#if SGEMM_TCU_TIMING_STATS
+    uint64_t timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     for (uint32_t elem = threadIdx.x; elem < a_tile_elems; elem += blockDim.x) {
       uint32_t row = elem / ctx::tileK;
       uint32_t col = elem % ctx::tileK;
@@ -53,6 +65,10 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
       local_B[elem] = pB[(i + row) * N + tile_col + col];
     }
     __syncthreads();
+#if SGEMM_TCU_TIMING_STATS
+    timing_stage_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+    timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
 
     ctx::load_matrix_sync(fragA, local_A, ctx::tileK);
     for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
@@ -60,10 +76,16 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
                             local_B + n_tile * ctx::tileN,
                             ctx::tileN * SGEMM_TCU_N_TILES);
     }
+#if SGEMM_TCU_TIMING_STATS
+    timing_operand_load_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
 #else
     auto pTileA = pA + tile_row * K + i;
 
     // Load A tile
+#if SGEMM_TCU_TIMING_STATS
+    uint64_t timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     ctx::load_matrix_sync(fragA, pTileA, K);
 
     for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
@@ -77,22 +99,55 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
         ctx::load_matrix_sync(fragB[n_tile], pTileB, N);
       }
     }
+#if SGEMM_TCU_TIMING_STATS
+    timing_operand_load_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
 #endif
 
     // Matrix multiply-accumulate: c += a * b
+#if SGEMM_TCU_TIMING_STATS
+    timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
       ctx::mma_sync(fragC[n_tile], fragA, fragB[n_tile], fragC[n_tile]);
     }
+#if SGEMM_TCU_TIMING_STATS
+    timing_mma_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
 #if SGEMM_TCU_USE_LMEM
+#if SGEMM_TCU_TIMING_STATS
+    timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     __syncthreads();
+#if SGEMM_TCU_TIMING_STATS
+    timing_post_iter_sync_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
 #endif
   }
 
   // Store the computed C tile
   for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+#if SGEMM_TCU_TIMING_STATS
+    uint64_t timing_start = csr_read(VX_CSR_MCYCLE);
+#endif
     auto pTileC = pC + tile_row * N + tile_col + n_tile * ctx::tileN;
     ctx::store_matrix_sync(pTileC, fragC[n_tile], N);
+#if SGEMM_TCU_TIMING_STATS
+    timing_store_cycles += csr_read(VX_CSR_MCYCLE) - timing_start;
+#endif
   }
+
+#if SGEMM_TCU_TIMING_STATS
+  uint32_t block_idx = blockIdx.x + blockIdx.y * gridDim.x;
+  pStats[block_idx] = {
+    csr_read(VX_CSR_MCYCLE) - timing_total_start,
+    timing_stage_cycles,
+    timing_operand_load_cycles,
+    timing_mma_cycles,
+    timing_post_iter_sync_cycles,
+    timing_store_cycles,
+  };
+#endif
 }
 
 int main() {

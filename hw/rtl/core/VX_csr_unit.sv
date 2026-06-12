@@ -37,6 +37,7 @@ module VX_csr_unit import VX_gpu_pkg::*; #(
     VX_execute_if.slave         execute_if,
     VX_result_if.master         result_if,
 
+    input dxa_perf_state_t      dxa_perf_state,
     output team_csr_state_t     team_csr_state
 );
     `UNUSED_SPARAM (INSTANCE_ID)
@@ -109,6 +110,7 @@ module VX_csr_unit import VX_gpu_pkg::*; #(
         .write_wid      (execute_if.data.wid),
         .write_addr     (csr_addr),
         .write_data     (csr_write_data),
+        .dxa_perf_state (dxa_perf_state),
         .team_csr_state (team_csr_state)
     );
 

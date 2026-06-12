@@ -73,7 +73,7 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     }
   }
 
-  dst_ptr[block_linear_id()] = {
+  result_t result = {
     __team_rank_x,
     __team_rank_y,
     errors,
@@ -81,6 +81,12 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
     first_actual,
     first_expected,
   };
+#if COOP_DXA_HW_STATS
+  for (uint32_t i = 0; i < kDxaStatCount; ++i) {
+    result.dxa_stats[i] = (vx_team_rank() == 0) ? vx_team_dxa_stat_read(i) : 0;
+  }
+#endif
+  dst_ptr[block_linear_id()] = result;
 }
 
 int main() {

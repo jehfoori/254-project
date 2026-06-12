@@ -68,6 +68,7 @@ import VX_fpu_pkg::*;
     input wire [`VX_CSR_ADDR_BITS-1:0]  write_addr,
     input wire [`XLEN-1:0]              write_data,
 
+    input dxa_perf_state_t              dxa_perf_state,
     output team_csr_state_t             team_csr_state
 );
 
@@ -77,6 +78,7 @@ import VX_fpu_pkg::*;
     // CSRs Write /////////////////////////////////////////////////////////////
 
     reg [`XLEN-1:0] mscratch;
+    reg [31:0] team_dxa_stat_sel;
     team_csr_state_t team_csr_state_r;
 
 `ifdef EXT_F_ENABLE
@@ -125,6 +127,7 @@ import VX_fpu_pkg::*;
     always @(posedge clk) begin
         if (reset) begin
             mscratch <= base_dcrs.startup_arg;
+            team_dxa_stat_sel <= '0;
             team_csr_state_r <= '0;
         end
         if (write_enable) begin
@@ -200,6 +203,9 @@ import VX_fpu_pkg::*;
                 `VX_CSR_TEAM_GLOBAL_STRIDE: begin
                     team_csr_state_r.global_stride <= write_data[31:0];
                 end
+                `VX_CSR_TEAM_DXA_STAT_SEL: begin
+                    team_dxa_stat_sel <= write_data[31:0];
+                end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
                 end
@@ -212,6 +218,30 @@ import VX_fpu_pkg::*;
     reg [`XLEN-1:0] read_data_ro_w;
     reg [`XLEN-1:0] read_data_rw_w;
     reg read_addr_valid_w;
+
+    reg [PERF_CTR_BITS-1:0] team_dxa_stat_value;
+    always @(*) begin
+        case (team_dxa_stat_sel)
+            32'd0:  team_dxa_stat_value = dxa_perf_state.commands;
+            32'd1:  team_dxa_stat_value = dxa_perf_state.panels_completed;
+            32'd2:  team_dxa_stat_value = dxa_perf_state.dcache_read_reqs;
+            32'd3:  team_dxa_stat_value = dxa_perf_state.dcache_read_rsps;
+            32'd4:  team_dxa_stat_value = dxa_perf_state.lmem_writes;
+            32'd5:  team_dxa_stat_value = dxa_perf_state.busy_cycles;
+            32'd6:  team_dxa_stat_value = dxa_perf_state.wait_slot_cycles;
+            32'd7:  team_dxa_stat_value = dxa_perf_state.stream_cycles;
+            32'd8:  team_dxa_stat_value = dxa_perf_state.overwrite_block_cycles;
+            32'd9:  team_dxa_stat_value = dxa_perf_state.dcache_req_stall_cycles;
+            32'd10: team_dxa_stat_value = dxa_perf_state.no_free_window_cycles;
+            32'd11: team_dxa_stat_value = dxa_perf_state.response_wait_cycles;
+            32'd12: team_dxa_stat_value = dxa_perf_state.lmem_fanout_cycles;
+            32'd13: team_dxa_stat_value = dxa_perf_state.lmem_stall_cycles;
+            32'd14: team_dxa_stat_value = dxa_perf_state.drain_cycles;
+            32'd15: team_dxa_stat_value = dxa_perf_state.max_pending_reads;
+            32'd16: team_dxa_stat_value = dxa_perf_state.max_ready_backlog;
+            default: team_dxa_stat_value = '0;
+        endcase
+    end
 
     always @(*) begin
         read_data_ro_w    = '0;
@@ -252,6 +282,8 @@ import VX_fpu_pkg::*;
             `VX_CSR_TEAM_GLOBAL_ADDR_1: read_data_ro_w = team_csr_state_r.copy[1].global_addr;
             `VX_CSR_TEAM_TILE_ROWS: read_data_ro_w = `XLEN'(team_csr_state_r.tile_rows);
             `VX_CSR_TEAM_GLOBAL_STRIDE: read_data_ro_w = `XLEN'(team_csr_state_r.global_stride);
+            `VX_CSR_TEAM_DXA_STAT_SEL: read_data_ro_w = `XLEN'(team_dxa_stat_sel);
+            `VX_CSR_TEAM_DXA_STAT: read_data_ro_w = `XLEN'(team_dxa_stat_value);
 
             `CSR_READ_64(`VX_CSR_MCYCLE, read_data_ro_w, cycles);
 
