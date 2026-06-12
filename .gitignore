@@ -1,4 +1,5 @@
 /build*
+/logs/
 /.vscode
 *.cache
 *.code-workspace
