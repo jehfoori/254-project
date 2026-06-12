@@ -2,11 +2,10 @@
 #include "common.h"
 
 enum : uint32_t {
-  kScratchBytes = 16,
   kSlot0Word = 0,
   kSlot1Word = 2,
   kPanelCount = 1,
-  kCopyBytes = sizeof(uint32_t),
+  kCopyBytes = sizeof(uint64_t),
 };
 
 static inline uint32_t block_linear_id() {
@@ -15,15 +14,14 @@ static inline uint32_t block_linear_id() {
 
 void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   auto* dst_ptr = reinterpret_cast<result_t*>(arg->dst_addr);
-  auto* scratch = reinterpret_cast<volatile uint32_t*>(__local_mem(kScratchBytes));
+  auto panel_base = csr_read(VX_CSR_LOCAL_MEM_BASE) + VX_TEAM_PANEL_OFFSET;
+  auto* panel = reinterpret_cast<volatile uint64_t*>(panel_base);
 
-  uint32_t slot0_offset = uint32_t(reinterpret_cast<uintptr_t>(&scratch[kSlot0Word])
-                                - uintptr_t(csr_read(VX_CSR_LOCAL_MEM_BASE)));
-  uint32_t slot1_offset = uint32_t(reinterpret_cast<uintptr_t>(&scratch[kSlot1Word])
-                                - uintptr_t(csr_read(VX_CSR_LOCAL_MEM_BASE)));
+  uint32_t slot0_offset = kSlot0Word * sizeof(uint64_t);
+  uint32_t slot1_offset = kSlot1Word * sizeof(uint64_t);
 
-  scratch[kSlot0Word] = 0;
-  scratch[kSlot1Word] = 0;
+  panel[kSlot0Word + __team_rank_y] = 0;
+  panel[kSlot1Word + __team_rank_x] = 0;
 
   vx_team_set_dxa_stream_slot_2d(0,
                                  arg->src0_addr,
@@ -42,12 +40,11 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
 
   vx_team_dxa_start();
   vx_team_dxa_wait_slot(0);
-  uint32_t slot0_value = scratch[kSlot0Word];
-  vx_team_dxa_wait_slot(1);
-  uint32_t slot1_value = scratch[kSlot1Word];
+  uint64_t slot0_value = panel[kSlot0Word + __team_rank_y];
+  uint64_t slot1_value = panel[kSlot1Word + __team_rank_x];
 
-  uint32_t expected_slot0 = arg->expected_slot0;
-  uint32_t expected_slot1 = arg->expected_slot1;
+  uint64_t expected_slot0 = arg->expected_slot0;
+  uint64_t expected_slot1 = arg->expected_slot1;
 
   dst_ptr[block_linear_id()] = {
     __team_rank_x,

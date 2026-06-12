@@ -171,6 +171,8 @@ import VX_fpu_pkg::*;
                 end
                 `VX_CSR_TEAM_COPY_MODE: begin
                     team_csr_state_r.copy[0].copy_mode <= write_data[31:0];
+                    team_csr_state_r.copy[0].tile_rows <= team_csr_state_r.tile_rows;
+                    team_csr_state_r.copy[0].global_stride <= team_csr_state_r.global_stride;
                 end
                 `VX_CSR_TEAM_GLOBAL_ADDR: begin
                     team_csr_state_r.copy[0].global_addr <= write_data;
@@ -186,6 +188,8 @@ import VX_fpu_pkg::*;
                 end
                 `VX_CSR_TEAM_COPY_MODE_1: begin
                     team_csr_state_r.copy[1].copy_mode <= write_data[31:0];
+                    team_csr_state_r.copy[1].tile_rows <= team_csr_state_r.tile_rows;
+                    team_csr_state_r.copy[1].global_stride <= team_csr_state_r.global_stride;
                 end
                 `VX_CSR_TEAM_GLOBAL_ADDR_1: begin
                     team_csr_state_r.copy[1].global_addr <= write_data;

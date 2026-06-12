@@ -2,13 +2,13 @@
 #include "common.h"
 
 enum : uint32_t {
-  kTileRows = 8,
-  kGlobalStride = 512,
+  kTileRows = 1,
+  kGlobalStride = 8,
   kSlot0Offset = 0x100,
-  kSlot0Size = 0x40,
+  kSlot0Size = 0,
   kSlot0Panels = 2,
   kSlot1Offset = 0x180,
-  kSlot1Size = 0x40,
+  kSlot1Size = 0,
   kSlot1Panels = 2,
 };
 

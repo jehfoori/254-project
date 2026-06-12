@@ -111,6 +111,8 @@ package VX_gpu_pkg;
         logic [31:0]      copy_size;
         logic [31:0]      dst_mask;
         logic [31:0]      copy_mode;
+        logic [31:0]      tile_rows;
+        logic [31:0]      global_stride;
         logic [`XLEN-1:0] global_addr;
     } team_copy_desc_t;
 

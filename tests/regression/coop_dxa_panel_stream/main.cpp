@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstring>
 #include <vector>
 #include <vortex.h>
 #include "common.h"
@@ -17,19 +18,18 @@
 namespace {
 
 const char* kernel_file = "kernel.vxbin";
-constexpr uint32_t kGridX = 2;
-constexpr uint32_t kGridY = 2;
+constexpr uint32_t kGridX = kTeamX;
+constexpr uint32_t kGridY = kTeamY;
 constexpr uint32_t kGridZ = 1;
 constexpr uint32_t kBlockX = 1;
 constexpr uint32_t kBlockY = 1;
 constexpr uint32_t kBlockZ = 1;
-constexpr uint32_t kTeamX = 2;
-constexpr uint32_t kTeamY = 2;
 constexpr uint32_t kBlockCount = kGridX * kGridY * kGridZ;
+constexpr uint32_t kSourceBytes = 512;
 
 vx_device_h device = nullptr;
-vx_buffer_h src0_buffer = nullptr;
-vx_buffer_h src1_buffer = nullptr;
+vx_buffer_h src_a_buffer = nullptr;
+vx_buffer_h src_b_buffer = nullptr;
 vx_buffer_h dst_buffer = nullptr;
 vx_buffer_h krnl_buffer = nullptr;
 vx_buffer_h args_buffer = nullptr;
@@ -37,13 +37,17 @@ kernel_arg_t kernel_arg = {};
 
 void cleanup() {
   if (device) {
-    vx_mem_free(src0_buffer);
-    vx_mem_free(src1_buffer);
+    vx_mem_free(src_a_buffer);
+    vx_mem_free(src_b_buffer);
     vx_mem_free(dst_buffer);
     vx_mem_free(krnl_buffer);
     vx_mem_free(args_buffer);
     vx_dev_close(device);
   }
+}
+
+void store_word(std::vector<uint8_t>& buffer, uint32_t byte_offset, uint64_t value) {
+  std::memcpy(buffer.data() + byte_offset, &value, sizeof(value));
 }
 
 }
@@ -60,26 +64,47 @@ int main() {
   kernel_arg.block_dim[2] = kBlockZ;
   kernel_arg.team_dim[0] = kTeamX;
   kernel_arg.team_dim[1] = kTeamY;
-  kernel_arg.expected_slot0 = 0x13579bdf2468ace0ull;
-  kernel_arg.expected_slot1 = 0x2468ace013579bdfull;
 
-  auto src0_buf_size = kTeamY * sizeof(uint64_t);
-  auto src1_buf_size = kTeamX * sizeof(uint64_t);
+  std::vector<uint8_t> src_a(kSourceBytes, 0);
+  std::vector<uint8_t> src_b(kSourceBytes, 0);
+  for (uint32_t panel = 0; panel < kPanelCount; ++panel) {
+    for (uint32_t group = 0; group < kTeamY; ++group) {
+      for (uint32_t row = 0; row < kTileRows; ++row) {
+        for (uint32_t beat = 0; beat < (kRowBytes / sizeof(uint64_t)); ++beat) {
+          uint32_t byte_offset = panel * kRowBytes
+                               + group * kTileRows * kGlobalStride
+                               + row * kGlobalStride
+                               + beat * sizeof(uint64_t);
+          store_word(src_a, byte_offset, expected_value(0, panel, group, row, beat));
+        }
+      }
+    }
+    for (uint32_t group = 0; group < kTeamX; ++group) {
+      for (uint32_t row = 0; row < kTileRows; ++row) {
+        for (uint32_t beat = 0; beat < (kRowBytes / sizeof(uint64_t)); ++beat) {
+          uint32_t byte_offset = panel * kTileRows * kGlobalStride
+                               + group * kRowBytes
+                               + row * kGlobalStride
+                               + beat * sizeof(uint64_t);
+          store_word(src_b, byte_offset, expected_value(1, panel, group, row, beat));
+        }
+      }
+    }
+  }
+
   auto dst_buf_size = kBlockCount * sizeof(result_t);
 
   std::cout << "allocate device memory" << std::endl;
-  RT_CHECK(vx_mem_alloc(device, src0_buf_size, VX_MEM_READ, &src0_buffer));
-  RT_CHECK(vx_mem_alloc(device, src1_buf_size, VX_MEM_READ, &src1_buffer));
+  RT_CHECK(vx_mem_alloc(device, src_a.size(), VX_MEM_READ, &src_a_buffer));
+  RT_CHECK(vx_mem_alloc(device, src_b.size(), VX_MEM_READ, &src_b_buffer));
   RT_CHECK(vx_mem_alloc(device, dst_buf_size, VX_MEM_WRITE, &dst_buffer));
-  RT_CHECK(vx_mem_address(src0_buffer, &kernel_arg.src0_addr));
-  RT_CHECK(vx_mem_address(src1_buffer, &kernel_arg.src1_addr));
+  RT_CHECK(vx_mem_address(src_a_buffer, &kernel_arg.src_a_addr));
+  RT_CHECK(vx_mem_address(src_b_buffer, &kernel_arg.src_b_addr));
   RT_CHECK(vx_mem_address(dst_buffer, &kernel_arg.dst_addr));
 
-  std::cout << "upload source words" << std::endl;
-  std::vector<uint64_t> src0_words(kTeamY, kernel_arg.expected_slot0);
-  std::vector<uint64_t> src1_words(kTeamX, kernel_arg.expected_slot1);
-  RT_CHECK(vx_copy_to_dev(src0_buffer, src0_words.data(), 0, src0_buf_size));
-  RT_CHECK(vx_copy_to_dev(src1_buffer, src1_words.data(), 0, src1_buf_size));
+  std::cout << "upload source panels" << std::endl;
+  RT_CHECK(vx_copy_to_dev(src_a_buffer, src_a.data(), 0, src_a.size()));
+  RT_CHECK(vx_copy_to_dev(src_b_buffer, src_b.data(), 0, src_b.size()));
 
   std::cout << "upload kernel binary" << std::endl;
   RT_CHECK(vx_upload_kernel_file(device, kernel_file, &krnl_buffer));
@@ -106,17 +131,15 @@ int main() {
       bool ok = true;
       ok &= result.team_rank_x == block_x;
       ok &= result.team_rank_y == block_y;
-      ok &= result.slot0_value == result.expected_slot0;
-      ok &= result.slot1_value == result.expected_slot1;
       ok &= result.status == 1;
+      ok &= result.errors == 0;
 
       if (!ok) {
         std::cout << "*** error: block (" << block_x << ", " << block_y << ")"
                   << " rank=(" << result.team_rank_x << ", " << result.team_rank_y << ")"
-                  << " slot0=0x" << std::hex << result.slot0_value
-                  << " expected=0x" << result.expected_slot0
-                  << " slot1=0x" << result.slot1_value
-                  << " expected=0x" << result.expected_slot1
+                  << " errors=" << result.errors
+                  << " actual=0x" << std::hex << result.first_actual
+                  << " expected=0x" << result.first_expected
                   << std::dec << " status=" << result.status
                   << std::endl;
         ++errors;
