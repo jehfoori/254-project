@@ -1,11 +1,11 @@
 # RTL Workflow Helpers
 
 This directory contains small wrappers for rebuilding RTLSIM and running the
-SGEMM regressions used by the true DXA/TMA redo branch.
+SGEMM/DXA regressions used by the true DXA/TMA redo branch.
 
-The current branch contains the clean SimX DXA path. These scripts are only
-workflow scaffolding for the next RTL implementation pass; they do not add RTL
-DXA engine logic by themselves.
+The current branch contains the SimX DXA path and the first RTL DXA data
+movement engine. For the full TA-facing reproduction recipe, see
+`REPRODUCTION.md` at the repo root.
 
 ## Docker Entry Point
 
@@ -58,9 +58,11 @@ Run the local-memory smoke test:
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_lmem --no-build
 ```
 
-`coop_lmem` uses the cooperative team CSRs beginning at `VX_CSR_TEAM_ID`.
-On the clean SimX-only branch, stock RTL does not implement those CSRs yet, so
-this test is expected to fail until the first RTL team/DXA CSR chunk lands.
+Run the DXA panel-stream smoke test:
+
+```bash
+./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_panel_stream --no-build
+```
 
 Run stock tensor SGEMM:
 
@@ -81,7 +83,7 @@ Run the cooperative DXA SGEMM path:
 ```bash
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 32 \
-  --coop-n-tiles 2 --panel-k-tiles 1 --no-build --clean
+  --coop-n-tiles 1 --panel-k-tiles 1 --no-build --clean
 ```
 
 Use `--profile` to enable compile-time cooperative stats for
@@ -93,12 +95,7 @@ Use `--profile` to enable compile-time cooperative stats for
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/smoke-rtl.sh
 ```
 
-This runs:
-
-- stock `sgemm_tcu m32 n32 k32`
-- local-memory `sgemm_tcu m32 n32 k32`
-
-After RTL team/DXA CSR support is implemented, add `coop_lmem` and
-`coop_sgemm_tcu` back to the smoke set as cooperative correctness checks.
+This runs a short stock/local/cooperative sanity set. For final result tables,
+use the commands in `REPRODUCTION.md`.
 
 Logs are written under `logs/rtl/`, which is intentionally ignored by git.
