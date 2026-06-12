@@ -25,6 +25,7 @@ module VX_mem_unit import VX_gpu_pkg::*; #(
 `endif
 
     VX_lsu_mem_if.slave     lsu_mem_if [`NUM_LSU_BLOCKS],
+    VX_mem_bus_if.slave     dxa_lmem_bus_if,
     VX_mem_bus_if.master    dcache_bus_if [DCACHE_NUM_REQS]
 );
     VX_lsu_mem_if #(
@@ -89,6 +90,11 @@ module VX_mem_unit import VX_gpu_pkg::*; #(
         .TAG_WIDTH (LMEM_TAG_WIDTH)
     ) lmem_adapt_if[`NUM_LSU_LANES]();
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (LSU_WORD_SIZE),
+        .TAG_WIDTH (LMEM_TAG_WIDTH)
+    ) lmem_bus_if[`NUM_LSU_LANES + 1]();
+
     VX_lsu_adapter #(
         .NUM_LANES    (`NUM_LSU_LANES),
         .DATA_SIZE    (LSU_WORD_SIZE),
@@ -104,10 +110,15 @@ module VX_mem_unit import VX_gpu_pkg::*; #(
         .mem_bus_if (lmem_adapt_if)
     );
 
+    for (genvar i = 0; i < `NUM_LSU_LANES; ++i) begin : g_lmem_bus_if
+        `ASSIGN_VX_MEM_BUS_IF (lmem_bus_if[i], lmem_adapt_if[i]);
+    end
+    `ASSIGN_VX_MEM_BUS_IF (lmem_bus_if[`NUM_LSU_LANES], dxa_lmem_bus_if);
+
     VX_local_mem #(
         .INSTANCE_ID(`SFORMATF(("%s-lmem", INSTANCE_ID))),
         .SIZE       (1 << `LMEM_LOG_SIZE),
-        .NUM_REQS   (`NUM_LSU_LANES),
+        .NUM_REQS   (`NUM_LSU_LANES + 1),
         .NUM_BANKS  (`LMEM_NUM_BANKS),
         .WORD_SIZE  (LSU_WORD_SIZE),
         .ADDR_WIDTH (LMEM_ADDR_WIDTH),
@@ -119,10 +130,12 @@ module VX_mem_unit import VX_gpu_pkg::*; #(
     `ifdef PERF_ENABLE
         .lmem_perf  (lmem_perf),
     `endif
-        .mem_bus_if (lmem_adapt_if)
+        .mem_bus_if (lmem_bus_if)
     );
 
 `else
+
+    `UNUSED_VX_MEM_BUS_IF (dxa_lmem_bus_if)
 
 `ifdef PERF_ENABLE
     assign lmem_perf = '0;

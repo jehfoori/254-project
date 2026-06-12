@@ -22,6 +22,7 @@ module VX_gbar_unit import VX_gpu_pkg::*; #(
     VX_gbar_bus_if.slave gbar_bus_if
 );
     `UNUSED_SPARAM (INSTANCE_ID)
+    `UNUSED_VAR (gbar_bus_if.req_data.raw_id)
 
     reg [NB_WIDTH-1:0][`NUM_CORES-1:0] barrier_masks;
     wire [`CLOG2(`NUM_CORES+1)-1:0] active_barrier_count;

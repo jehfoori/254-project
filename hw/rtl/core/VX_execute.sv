@@ -44,7 +44,10 @@ module VX_execute import VX_gpu_pkg::*; #(
     VX_warp_ctl_if.master   warp_ctl_if,
 
     // commit interface
-    VX_commit_csr_if.slave  commit_csr_if
+    VX_commit_csr_if.slave  commit_csr_if,
+
+    input dxa_perf_state_t  dxa_perf_state,
+    output team_csr_state_t team_csr_state
 );
 
 `ifdef EXT_F_ENABLE
@@ -115,7 +118,9 @@ module VX_execute import VX_gpu_pkg::*; #(
     `endif
         .commit_csr_if  (commit_csr_if),
         .sched_csr_if   (sched_csr_if),
-        .warp_ctl_if    (warp_ctl_if)
+        .warp_ctl_if    (warp_ctl_if),
+        .dxa_perf_state (dxa_perf_state),
+        .team_csr_state (team_csr_state)
     );
 
 endmodule

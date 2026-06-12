@@ -66,16 +66,20 @@ import VX_fpu_pkg::*;
     input wire [UUID_WIDTH-1:0]         write_uuid,
     input wire [NW_WIDTH-1:0]           write_wid,
     input wire [`VX_CSR_ADDR_BITS-1:0]  write_addr,
-    input wire [`XLEN-1:0]              write_data
+    input wire [`XLEN-1:0]              write_data,
+
+    input dxa_perf_state_t              dxa_perf_state,
+    output team_csr_state_t             team_csr_state
 );
 
     `UNUSED_VAR (reset)
     `UNUSED_VAR (write_wid)
-    `UNUSED_VAR (write_data)
 
     // CSRs Write /////////////////////////////////////////////////////////////
 
     reg [`XLEN-1:0] mscratch;
+    reg [31:0] team_dxa_stat_sel;
+    team_csr_state_t team_csr_state_r;
 
 `ifdef EXT_F_ENABLE
     reg [`NUM_WARPS-1:0][INST_FRM_BITS+`FP_FLAGS_BITS-1:0] fcsr, fcsr_n;
@@ -123,6 +127,8 @@ import VX_fpu_pkg::*;
     always @(posedge clk) begin
         if (reset) begin
             mscratch <= base_dcrs.startup_arg;
+            team_dxa_stat_sel <= '0;
+            team_csr_state_r <= '0;
         end
         if (write_enable) begin
             case (write_addr)
@@ -146,6 +152,60 @@ import VX_fpu_pkg::*;
                 `VX_CSR_MSCRATCH: begin
                     mscratch <= write_data;
                 end
+                `VX_CSR_TEAM_ID: begin
+                    team_csr_state_r.team_id <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_RANK: begin
+                    team_csr_state_r.team_rank_x <= write_data[15:0];
+                    team_csr_state_r.team_rank_y <= write_data[31:16];
+                end
+                `VX_CSR_TEAM_SIZE: begin
+                    team_csr_state_r.team_size_x <= write_data[15:0];
+                    team_csr_state_r.team_size_y <= write_data[31:16];
+                end
+                `VX_CSR_TEAM_SRC_OFFSET: begin
+                    team_csr_state_r.copy[0].src_offset <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_COPY_SIZE: begin
+                    team_csr_state_r.copy[0].copy_size <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_DST_MASK: begin
+                    team_csr_state_r.copy[0].dst_mask <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_COPY_MODE: begin
+                    team_csr_state_r.copy[0].copy_mode <= write_data[31:0];
+                    team_csr_state_r.copy[0].tile_rows <= team_csr_state_r.tile_rows;
+                    team_csr_state_r.copy[0].global_stride <= team_csr_state_r.global_stride;
+                end
+                `VX_CSR_TEAM_GLOBAL_ADDR: begin
+                    team_csr_state_r.copy[0].global_addr <= write_data;
+                end
+                `VX_CSR_TEAM_SRC_OFFSET_1: begin
+                    team_csr_state_r.copy[1].src_offset <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_COPY_SIZE_1: begin
+                    team_csr_state_r.copy[1].copy_size <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_DST_MASK_1: begin
+                    team_csr_state_r.copy[1].dst_mask <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_COPY_MODE_1: begin
+                    team_csr_state_r.copy[1].copy_mode <= write_data[31:0];
+                    team_csr_state_r.copy[1].tile_rows <= team_csr_state_r.tile_rows;
+                    team_csr_state_r.copy[1].global_stride <= team_csr_state_r.global_stride;
+                end
+                `VX_CSR_TEAM_GLOBAL_ADDR_1: begin
+                    team_csr_state_r.copy[1].global_addr <= write_data;
+                end
+                `VX_CSR_TEAM_TILE_ROWS: begin
+                    team_csr_state_r.tile_rows <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_GLOBAL_STRIDE: begin
+                    team_csr_state_r.global_stride <= write_data[31:0];
+                end
+                `VX_CSR_TEAM_DXA_STAT_SEL: begin
+                    team_dxa_stat_sel <= write_data[31:0];
+                end
                 default: begin
                     `ASSERT(0, ("%t: *** %s invalid CSR write address: %0h (#%0d)", $time, INSTANCE_ID, write_addr, write_uuid));
                 end
@@ -158,6 +218,30 @@ import VX_fpu_pkg::*;
     reg [`XLEN-1:0] read_data_ro_w;
     reg [`XLEN-1:0] read_data_rw_w;
     reg read_addr_valid_w;
+
+    reg [PERF_CTR_BITS-1:0] team_dxa_stat_value;
+    always @(*) begin
+        case (team_dxa_stat_sel)
+            32'd0:  team_dxa_stat_value = dxa_perf_state.commands;
+            32'd1:  team_dxa_stat_value = dxa_perf_state.panels_completed;
+            32'd2:  team_dxa_stat_value = dxa_perf_state.dcache_read_reqs;
+            32'd3:  team_dxa_stat_value = dxa_perf_state.dcache_read_rsps;
+            32'd4:  team_dxa_stat_value = dxa_perf_state.lmem_writes;
+            32'd5:  team_dxa_stat_value = dxa_perf_state.busy_cycles;
+            32'd6:  team_dxa_stat_value = dxa_perf_state.wait_slot_cycles;
+            32'd7:  team_dxa_stat_value = dxa_perf_state.stream_cycles;
+            32'd8:  team_dxa_stat_value = dxa_perf_state.overwrite_block_cycles;
+            32'd9:  team_dxa_stat_value = dxa_perf_state.dcache_req_stall_cycles;
+            32'd10: team_dxa_stat_value = dxa_perf_state.no_free_window_cycles;
+            32'd11: team_dxa_stat_value = dxa_perf_state.response_wait_cycles;
+            32'd12: team_dxa_stat_value = dxa_perf_state.lmem_fanout_cycles;
+            32'd13: team_dxa_stat_value = dxa_perf_state.lmem_stall_cycles;
+            32'd14: team_dxa_stat_value = dxa_perf_state.drain_cycles;
+            32'd15: team_dxa_stat_value = dxa_perf_state.max_pending_reads;
+            32'd16: team_dxa_stat_value = dxa_perf_state.max_ready_backlog;
+            default: team_dxa_stat_value = '0;
+        endcase
+    end
 
     always @(*) begin
         read_data_ro_w    = '0;
@@ -183,6 +267,23 @@ import VX_fpu_pkg::*;
             `VX_CSR_NUM_WARPS  : read_data_ro_w = `XLEN'(`NUM_WARPS);
             `VX_CSR_NUM_CORES  : read_data_ro_w = `XLEN'(`NUM_CORES * `NUM_CLUSTERS);
             `VX_CSR_LOCAL_MEM_BASE: read_data_ro_w = `XLEN'(`LMEM_BASE_ADDR);
+            `VX_CSR_TEAM_ID    : read_data_ro_w = `XLEN'(team_csr_state_r.team_id);
+            `VX_CSR_TEAM_RANK  : read_data_ro_w = `XLEN'({team_csr_state_r.team_rank_y, team_csr_state_r.team_rank_x});
+            `VX_CSR_TEAM_SIZE  : read_data_ro_w = `XLEN'({team_csr_state_r.team_size_y, team_csr_state_r.team_size_x});
+            `VX_CSR_TEAM_SRC_OFFSET: read_data_ro_w = `XLEN'(team_csr_state_r.copy[0].src_offset);
+            `VX_CSR_TEAM_COPY_SIZE: read_data_ro_w = `XLEN'(team_csr_state_r.copy[0].copy_size);
+            `VX_CSR_TEAM_DST_MASK: read_data_ro_w = `XLEN'(team_csr_state_r.copy[0].dst_mask);
+            `VX_CSR_TEAM_COPY_MODE: read_data_ro_w = `XLEN'(team_csr_state_r.copy[0].copy_mode);
+            `VX_CSR_TEAM_GLOBAL_ADDR: read_data_ro_w = team_csr_state_r.copy[0].global_addr;
+            `VX_CSR_TEAM_SRC_OFFSET_1: read_data_ro_w = `XLEN'(team_csr_state_r.copy[1].src_offset);
+            `VX_CSR_TEAM_COPY_SIZE_1: read_data_ro_w = `XLEN'(team_csr_state_r.copy[1].copy_size);
+            `VX_CSR_TEAM_DST_MASK_1: read_data_ro_w = `XLEN'(team_csr_state_r.copy[1].dst_mask);
+            `VX_CSR_TEAM_COPY_MODE_1: read_data_ro_w = `XLEN'(team_csr_state_r.copy[1].copy_mode);
+            `VX_CSR_TEAM_GLOBAL_ADDR_1: read_data_ro_w = team_csr_state_r.copy[1].global_addr;
+            `VX_CSR_TEAM_TILE_ROWS: read_data_ro_w = `XLEN'(team_csr_state_r.tile_rows);
+            `VX_CSR_TEAM_GLOBAL_STRIDE: read_data_ro_w = `XLEN'(team_csr_state_r.global_stride);
+            `VX_CSR_TEAM_DXA_STAT_SEL: read_data_ro_w = `XLEN'(team_dxa_stat_sel);
+            `VX_CSR_TEAM_DXA_STAT: read_data_ro_w = `XLEN'(team_dxa_stat_value);
 
             `CSR_READ_64(`VX_CSR_MCYCLE, read_data_ro_w, cycles);
 
@@ -287,6 +388,7 @@ import VX_fpu_pkg::*;
 
     assign read_data_ro = read_data_ro_w;
     assign read_data_rw = read_data_rw_w;
+    assign team_csr_state = team_csr_state_r;
 
     `UNUSED_VAR (base_dcrs)
 

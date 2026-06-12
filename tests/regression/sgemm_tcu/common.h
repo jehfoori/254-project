@@ -15,6 +15,27 @@
 #define OTYPE fp32
 #endif
 
+#ifndef SGEMM_TCU_USE_LMEM
+#define SGEMM_TCU_USE_LMEM 0
+#endif
+
+#ifndef SGEMM_TCU_N_TILES
+#define SGEMM_TCU_N_TILES 1
+#endif
+
+#ifndef SGEMM_TCU_TIMING_STATS
+#define SGEMM_TCU_TIMING_STATS 0
+#endif
+
+typedef struct {
+  uint64_t total_cycles;
+  uint64_t stage_cycles;
+  uint64_t operand_load_cycles;
+  uint64_t mma_cycles;
+  uint64_t post_iter_sync_cycles;
+  uint64_t store_cycles;
+} timing_stats_t;
+
 typedef struct {
   uint32_t grid_dim[2];
   uint32_t block_dim[2];
@@ -22,6 +43,7 @@ typedef struct {
   uint64_t A_addr;
   uint64_t B_addr;
   uint64_t C_addr;
+  uint64_t stats_addr;
 } kernel_arg_t;
 
 #endif

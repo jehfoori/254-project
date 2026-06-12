@@ -17,6 +17,7 @@ interface VX_gbar_bus_if import VX_gpu_pkg::*; ();
 
     typedef struct packed {
         logic [NB_WIDTH-1:0] id;
+        logic [31:0] raw_id;
         logic [NC_WIDTH-1:0] size_m1;
         logic [NC_WIDTH-1:0] core_id;
     } req_data_t;

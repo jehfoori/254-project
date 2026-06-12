@@ -92,6 +92,7 @@ module VX_schedule import VX_gpu_pkg::*; #(
 `ifdef GBAR_ENABLE
     reg gbar_req_valid;
     reg [NB_WIDTH-1:0] gbar_req_id;
+    reg [31:0] gbar_req_raw_id;
     reg [NC_WIDTH-1:0] gbar_req_size_m1;
 `endif
 
@@ -217,6 +218,7 @@ module VX_schedule import VX_gpu_pkg::*; #(
             barrier_ctrs    <= '0;
         `ifdef GBAR_ENABLE
             gbar_req_valid  <= 0;
+            gbar_req_raw_id <= '0;
         `endif
             stalled_warps   <= '0;
             warp_pcs        <= '0;
@@ -260,6 +262,7 @@ module VX_schedule import VX_gpu_pkg::*; #(
              && (curr_barrier_mask_p1 == active_warps)) begin
                 gbar_req_valid <= 1;
                 gbar_req_id <= warp_ctl_if.barrier.id;
+                gbar_req_raw_id <= warp_ctl_if.barrier.raw_id;
                 gbar_req_size_m1 <= NC_WIDTH'(warp_ctl_if.barrier.size_m1);
             end
             if (gbar_bus_if.req_valid && gbar_bus_if.req_ready) begin
@@ -278,6 +281,7 @@ module VX_schedule import VX_gpu_pkg::*; #(
 `ifdef GBAR_ENABLE
     assign gbar_bus_if.req_valid        = gbar_req_valid;
     assign gbar_bus_if.req_data.id      = gbar_req_id;
+    assign gbar_bus_if.req_data.raw_id  = gbar_req_raw_id;
     assign gbar_bus_if.req_data.size_m1 = gbar_req_size_m1;
     assign gbar_bus_if.req_data.core_id = NC_WIDTH'(CORE_ID % `NUM_CORES);
 `endif

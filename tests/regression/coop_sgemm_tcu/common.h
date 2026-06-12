@@ -28,11 +28,11 @@
 #endif
 
 #ifndef COOP_PROFILE_STATS
-#define COOP_PROFILE_STATS 1
+#define COOP_PROFILE_STATS 0
 #endif
 
-#ifndef COOP_DIAG_SERIAL_N2
-#define COOP_DIAG_SERIAL_N2 0
+#ifndef COOP_TIMING_STATS
+#define COOP_TIMING_STATS 0
 #endif
 
 #ifndef COOP_TENSOR_FEED_ORACLE
@@ -43,27 +43,31 @@ typedef struct {
   uint32_t team_id;
   uint32_t team_rank_x;
   uint32_t team_rank_y;
-  uint32_t a_tile_loads;
-  uint32_t b_tile_loads;
+  uint32_t dxa_commands;
+  uint32_t dxa_a_panels;
+  uint32_t dxa_b_panels;
   uint32_t team_barriers;
-  uint32_t team_arrives;
-  uint32_t team_waits;
-  uint32_t transfer_events;
-  uint32_t global_bytes;
-  uint32_t fanout_bytes;
-  uint32_t panel_write_bytes;
+  uint32_t dxa_stream_commands;
+  uint32_t dxa_slot_waits;
+  uint32_t dxa_global_bytes;
+  uint32_t baseline_global_bytes;
+  uint32_t avoided_global_bytes;
   uint32_t panel_read_bytes;
-  uint32_t panel_transfers;
   uint32_t mma_steps;
   uint32_t partial_panels;
-  uint32_t slot_reuse_barriers;
+#if COOP_TIMING_STATS
+  uint64_t timing_total_cycles;
+  uint64_t timing_dxa_wait_cycles;
+  uint64_t timing_panel_load_cycles;
+  uint64_t timing_mma_cycles;
+  uint64_t timing_store_cycles;
+#endif
 } block_stats_t;
 
 typedef struct {
   uint32_t grid_dim[2];
   uint32_t block_dim[2];
   uint32_t team_dim[2];
-  uint32_t mode;
   uint32_t M, N, K;
   uint64_t A_addr;
   uint64_t B_addr;

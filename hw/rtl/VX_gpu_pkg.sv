@@ -106,6 +106,47 @@ package VX_gpu_pkg;
     localparam VX_DCR_ADDR_WIDTH = `VX_DCR_ADDR_BITS;
     localparam VX_DCR_DATA_WIDTH = 32;
 
+    typedef struct packed {
+        logic [31:0]      src_offset;
+        logic [31:0]      copy_size;
+        logic [31:0]      dst_mask;
+        logic [31:0]      copy_mode;
+        logic [31:0]      tile_rows;
+        logic [31:0]      global_stride;
+        logic [`XLEN-1:0] global_addr;
+    } team_copy_desc_t;
+
+    typedef struct packed {
+        logic [31:0] team_id;
+        logic [15:0] team_rank_x;
+        logic [15:0] team_rank_y;
+        logic [15:0] team_size_x;
+        logic [15:0] team_size_y;
+        logic [31:0] tile_rows;
+        logic [31:0] global_stride;
+        team_copy_desc_t [1:0] copy;
+    } team_csr_state_t;
+
+    typedef struct packed {
+        logic [PERF_CTR_BITS-1:0] commands;
+        logic [PERF_CTR_BITS-1:0] panels_completed;
+        logic [PERF_CTR_BITS-1:0] dcache_read_reqs;
+        logic [PERF_CTR_BITS-1:0] dcache_read_rsps;
+        logic [PERF_CTR_BITS-1:0] lmem_writes;
+        logic [PERF_CTR_BITS-1:0] busy_cycles;
+        logic [PERF_CTR_BITS-1:0] wait_slot_cycles;
+        logic [PERF_CTR_BITS-1:0] stream_cycles;
+        logic [PERF_CTR_BITS-1:0] overwrite_block_cycles;
+        logic [PERF_CTR_BITS-1:0] dcache_req_stall_cycles;
+        logic [PERF_CTR_BITS-1:0] no_free_window_cycles;
+        logic [PERF_CTR_BITS-1:0] response_wait_cycles;
+        logic [PERF_CTR_BITS-1:0] lmem_fanout_cycles;
+        logic [PERF_CTR_BITS-1:0] lmem_stall_cycles;
+        logic [PERF_CTR_BITS-1:0] drain_cycles;
+        logic [PERF_CTR_BITS-1:0] max_pending_reads;
+        logic [PERF_CTR_BITS-1:0] max_ready_backlog;
+    } dxa_perf_state_t;
+
     localparam STALL_TIMEOUT = (100000 * (1 ** (`L2_ENABLED + `L3_ENABLED)));
 
     ///////////////////////////////////////////////////////////////////////////
@@ -473,6 +514,7 @@ package VX_gpu_pkg;
     typedef struct packed {
         logic                   valid;
         logic [NB_WIDTH-1:0]    id;
+        logic [31:0]            raw_id;
         logic                   is_global;
     `ifdef GBAR_ENABLE
         logic [`MAX(NW_WIDTH, NC_WIDTH)-1:0] size_m1;
@@ -797,6 +839,11 @@ package VX_gpu_pkg;
     // Input request size (using coalesced memory blocks)
     localparam DCACHE_CHANNELS	    = `UP((`NUM_LSU_LANES * LSU_WORD_SIZE) / DCACHE_WORD_SIZE);
     localparam DCACHE_NUM_REQS	    = `NUM_LSU_BLOCKS * DCACHE_CHANNELS;
+`ifdef GBAR_ENABLE
+    localparam DCACHE_NUM_INPUTS    = `SOCKET_SIZE + 1;
+`else
+    localparam DCACHE_NUM_INPUTS    = `SOCKET_SIZE;
+`endif
 
     // Core request tag Id bits
     localparam DCACHE_MERGED_REQS   = (`NUM_LSU_LANES * LSU_WORD_SIZE) / DCACHE_WORD_SIZE;
@@ -811,9 +858,9 @@ package VX_gpu_pkg;
 
     // Memory request tag bits
 `ifdef DCACHE_ENABLE
-    localparam DCACHE_MEM_TAG_WIDTH = `CACHE_CLUSTER_NC_MEM_TAG_WIDTH(`DCACHE_MSHR_SIZE, `DCACHE_NUM_BANKS, DCACHE_NUM_REQS, `L1_MEM_PORTS, DCACHE_LINE_SIZE, DCACHE_WORD_SIZE, DCACHE_TAG_WIDTH, `SOCKET_SIZE, `NUM_DCACHES, UUID_WIDTH);
+    localparam DCACHE_MEM_TAG_WIDTH = `CACHE_CLUSTER_NC_MEM_TAG_WIDTH(`DCACHE_MSHR_SIZE, `DCACHE_NUM_BANKS, DCACHE_NUM_REQS, `L1_MEM_PORTS, DCACHE_LINE_SIZE, DCACHE_WORD_SIZE, DCACHE_TAG_WIDTH, DCACHE_NUM_INPUTS, `NUM_DCACHES, UUID_WIDTH);
 `else
-    localparam DCACHE_MEM_TAG_WIDTH = `CACHE_CLUSTER_BYPASS_MEM_TAG_WIDTH(DCACHE_NUM_REQS, `L1_MEM_PORTS, DCACHE_LINE_SIZE, DCACHE_WORD_SIZE, DCACHE_TAG_WIDTH, `SOCKET_SIZE, `NUM_DCACHES);
+    localparam DCACHE_MEM_TAG_WIDTH = `CACHE_CLUSTER_BYPASS_MEM_TAG_WIDTH(DCACHE_NUM_REQS, `L1_MEM_PORTS, DCACHE_LINE_SIZE, DCACHE_WORD_SIZE, DCACHE_TAG_WIDTH, DCACHE_NUM_INPUTS, `NUM_DCACHES);
 `endif
 
     /////////////////////////////// L1 Parameters /////////////////////////////

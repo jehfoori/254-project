@@ -88,6 +88,12 @@ module VX_mem_unit_top import VX_gpu_pkg::*; #(
         .TAG_WIDTH (DCACHE_TAG_WIDTH)
     ) mem_bus_if[DCACHE_NUM_REQS]();
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (LSU_WORD_SIZE),
+        .TAG_WIDTH (LMEM_TAG_WIDTH)
+    ) dxa_lmem_bus_if();
+    `INIT_VX_MEM_BUS_IF (dxa_lmem_bus_if)
+
     // memory request
     for (genvar i = 0; i < DCACHE_NUM_REQS; ++i) begin : g_mem_req
         assign mem_req_valid[i] = mem_bus_if[i].req_valid;
@@ -121,6 +127,7 @@ module VX_mem_unit_top import VX_gpu_pkg::*; #(
         .lmem_perf     (lmem_perf),
     `endif
         .lsu_mem_if    (lsu_mem_if),
+        .dxa_lmem_bus_if(dxa_lmem_bus_if),
         .dcache_bus_if (mem_bus_if)
     );
 

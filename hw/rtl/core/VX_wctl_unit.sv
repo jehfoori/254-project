@@ -132,6 +132,7 @@ module VX_wctl_unit import VX_gpu_pkg::*; #(
 
     assign barrier.valid    = is_bar;
     assign barrier.id       = rs1_data[NB_WIDTH-1:0];
+    assign barrier.raw_id   = rs1_data[31:0];
 `ifdef GBAR_ENABLE
     assign barrier.is_global= rs1_data[31];
 `else

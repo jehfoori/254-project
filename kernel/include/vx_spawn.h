@@ -56,13 +56,26 @@ typedef void (*vx_serial_cb)(void *arg);
 #define VX_TEAM_BARRIER_ID 0xC0000000u
 #define VX_TEAM_ARRIVE_ID  0xC0000001u
 #define VX_TEAM_WAIT_ID    0xC0000002u
+#define VX_TEAM_DXA_START_ID      0xC0000003u
+#define VX_TEAM_DXA_WAIT_SLOT0_ID 0xC0000004u
+#define VX_TEAM_DXA_WAIT_SLOT1_ID 0xC0000005u
 #define VX_TEAM_COPY_MODE_LOCAL 0u
 #define VX_TEAM_COPY_MODE_GLOBAL 1u
 #define VX_TEAM_COPY_MODE_PANEL 2u
-#define VX_TEAM_COPY_MODE_PANEL_ORACLE 3u
+#define VX_TEAM_COPY_MODE_DXA_STREAM 4u
+#ifndef VX_CSR_TEAM_DXA_STAT_SEL
+#define VX_CSR_TEAM_DXA_STAT_SEL 0xFD3
+#endif
+#ifndef VX_CSR_TEAM_DXA_STAT
+#define VX_CSR_TEAM_DXA_STAT 0xFD4
+#endif
 // SimX reserves this local-memory window for team-shared panel reads.
+#ifndef VX_TEAM_PANEL_OFFSET
 #define VX_TEAM_PANEL_OFFSET 0x2000u
+#endif
+#ifndef VX_TEAM_PANEL_WINDOW
 #define VX_TEAM_PANEL_WINDOW 0x10000u
+#endif
 
 #ifndef VX_CSR_TEAM_TENSOR_A_OFFSET
 #define VX_CSR_TEAM_TENSOR_A_OFFSET 0xFD4
@@ -172,18 +185,21 @@ inline void vx_team_set_panel_slot_2d(uint32_t slot,
   vx_team_set_panel_slot(slot, global_addr, panel_offset, copy_size);
 }
 
-inline void vx_team_set_panel_oracle_slot_2d(uint32_t slot,
-                                             uint64_t global_addr,
-                                             uint32_t panel_offset,
-                                             uint32_t copy_size,
-                                             uint32_t tile_rows,
-                                             uint32_t global_stride) {
+inline void vx_team_set_dxa_stream_slot_2d(uint32_t slot,
+                                           uint64_t global_addr,
+                                           uint32_t panel_offset,
+                                           uint32_t copy_size,
+                                           uint32_t tile_rows,
+                                           uint32_t global_stride,
+                                           uint32_t panel_count) {
   vx_team_set_multicast_shape(tile_rows, global_stride);
   vx_team_set_panel_slot(slot, global_addr, panel_offset, copy_size);
   if (slot == 0) {
-    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_PANEL_ORACLE);
+    csr_write(VX_CSR_TEAM_DST_MASK, panel_count);
+    csr_write(VX_CSR_TEAM_COPY_MODE, VX_TEAM_COPY_MODE_DXA_STREAM);
   } else {
-    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_PANEL_ORACLE);
+    csr_write(VX_CSR_TEAM_DST_MASK_1, panel_count);
+    csr_write(VX_CSR_TEAM_COPY_MODE_1, VX_TEAM_COPY_MODE_DXA_STREAM);
   }
 }
 
@@ -224,6 +240,41 @@ inline void vx_team_arrive() {
 
 inline void vx_team_wait() {
   vx_barrier(VX_TEAM_WAIT_ID, vx_team_size());
+}
+
+inline void vx_team_dxa_start() {
+  vx_barrier(VX_TEAM_DXA_START_ID, vx_team_size());
+}
+
+inline void vx_team_dxa_wait_slot(uint32_t slot) {
+  vx_barrier(slot == 0 ? VX_TEAM_DXA_WAIT_SLOT0_ID : VX_TEAM_DXA_WAIT_SLOT1_ID,
+             vx_team_size());
+}
+
+enum {
+  VX_TEAM_DXA_STAT_COMMANDS = 0,
+  VX_TEAM_DXA_STAT_PANELS_COMPLETED = 1,
+  VX_TEAM_DXA_STAT_DCACHE_READ_REQS = 2,
+  VX_TEAM_DXA_STAT_DCACHE_READ_RSPS = 3,
+  VX_TEAM_DXA_STAT_LMEM_WRITES = 4,
+  VX_TEAM_DXA_STAT_BUSY_CYCLES = 5,
+  VX_TEAM_DXA_STAT_WAIT_SLOT_CYCLES = 6,
+  VX_TEAM_DXA_STAT_STREAM_CYCLES = 7,
+  VX_TEAM_DXA_STAT_OVERWRITE_BLOCK_CYCLES = 8,
+  VX_TEAM_DXA_STAT_DCACHE_REQ_STALL_CYCLES = 9,
+  VX_TEAM_DXA_STAT_NO_FREE_WINDOW_CYCLES = 10,
+  VX_TEAM_DXA_STAT_RESPONSE_WAIT_CYCLES = 11,
+  VX_TEAM_DXA_STAT_LMEM_FANOUT_CYCLES = 12,
+  VX_TEAM_DXA_STAT_LMEM_STALL_CYCLES = 13,
+  VX_TEAM_DXA_STAT_DRAIN_CYCLES = 14,
+  VX_TEAM_DXA_STAT_MAX_PENDING_READS = 15,
+  VX_TEAM_DXA_STAT_MAX_READY_BACKLOG = 16,
+  VX_TEAM_DXA_STAT_COUNT = 17,
+};
+
+inline uint64_t vx_team_dxa_stat_read(uint32_t selector) {
+  csr_write(VX_CSR_TEAM_DXA_STAT_SEL, selector);
+  return csr_read(VX_CSR_TEAM_DXA_STAT);
 }
 
 // launch a kernel function with a grid of blocks and block of threads

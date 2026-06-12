@@ -25,7 +25,7 @@ module VX_gbar_arb import VX_gpu_pkg::*; #(
     VX_gbar_bus_if.master   bus_out_if
 );
 
-    localparam REQ_DATAW = NB_WIDTH + NC_WIDTH + NC_WIDTH;
+    localparam REQ_DATAW = NB_WIDTH + 32 + NC_WIDTH + NC_WIDTH;
 
     // arbitrate request
 

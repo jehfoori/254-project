@@ -22,12 +22,12 @@ using namespace vortex;
 
 static constexpr uint32_t kGlobalMulticastMode = 1;
 static constexpr uint32_t kTeamPanelMode = 2;
-static constexpr uint32_t kTeamPanelOracleMode = 3;
+static constexpr uint32_t kDxaStreamMode = 4;
 static constexpr uint32_t kTeamPanelOffset = 0x2000;
 static constexpr uint32_t kTeamPanelWindow = 0x10000;
 
 static bool is_panel_mode(uint32_t copy_mode) {
-  return copy_mode == kTeamPanelMode || copy_mode == kTeamPanelOracleMode;
+  return copy_mode == kTeamPanelMode || copy_mode == kDxaStreamMode;
 }
 
 static uint16_t read_u16(const std::vector<uint8_t>& data, uint32_t offset) {
@@ -128,15 +128,22 @@ void Cluster::reset() {
 void Cluster::tick() {
   for (auto& entry : cooperative_teams_) {
     auto& team = entry.second;
-    if (team.transfer_cycles == 0)
+    if (team.transfer_cycles == 0) {
+      try_schedule_dxa_stream(team);
       continue;
+    }
 
     --team.transfer_cycles;
     if (team.transfer_cycles == 0) {
-      execute_pending_copies(team);
-      team.ready_epoch = team.transfer_epoch;
-      team.transfer_ready = true;
-      resume_waiters(team);
+      if (team.dxa_stream_inflight) {
+        complete_dxa_stream_transfer(team);
+      } else {
+        execute_pending_copies(team);
+        team.ready_epoch = team.transfer_epoch;
+        team.transfer_ready = true;
+        resume_waiters(team);
+      }
+      try_schedule_dxa_stream(team);
     }
   }
 }
@@ -267,6 +274,7 @@ void Cluster::cooperative_arrive(uint32_t core_id) {
         continue;
 
       team.pending_copies.push_back(TeamState::CopyDesc{
+        copy_idx,
         src_ctx.copy_mode[copy_idx],
         src_ctx.global_addr[copy_idx],
         src_ctx.src_offset[copy_idx],
@@ -312,6 +320,111 @@ void Cluster::cooperative_wait(uint32_t core_id) {
 
   team.waiters.set(local_core_id);
   DP(3, "*** Wait core #" << core_id << " in cooperative team #" << coop.team_id);
+}
+
+void Cluster::cooperative_dxa_start(uint32_t core_id) {
+  auto sockets_per_cluster = sockets_.size();
+  auto cores_per_socket = cores_per_socket_;
+  uint32_t cores_per_cluster = sockets_per_cluster * cores_per_socket;
+  uint32_t local_core_id = core_id % cores_per_cluster;
+
+  auto* core = this->get_core(local_core_id);
+  auto& coop = core->emulator().cooperative_ctx();
+  auto& team = get_team_state(local_core_id, coop);
+
+  team.arrived.set(local_core_id);
+  DP(3, "*** DXA stream start core #" << core_id << " in cooperative team #" << coop.team_id);
+
+  if (team.arrived.count() != team.team_size)
+    return;
+
+  auto leader_core_id = team.rank_to_core.at(0);
+  assert(leader_core_id != 0xffffffff);
+  auto* leader_core = this->get_core(leader_core_id);
+  auto& leader_ctx = leader_core->emulator().cooperative_ctx();
+
+  assert(leader_ctx.copy_mode[0] == kDxaStreamMode);
+  assert(leader_ctx.copy_mode[1] == kDxaStreamMode);
+  assert(leader_ctx.dst_mask[0] != 0);
+  assert(leader_ctx.dst_mask[0] == leader_ctx.dst_mask[1]);
+
+  team.dxa_stream_active = true;
+  team.dxa_stream_inflight = false;
+  team.dxa_stream_panel_count = leader_ctx.dst_mask[0];
+  team.dxa_stream_next_issue = 0;
+  team.dxa_stream_inflight_panel = 0;
+  team.dxa_stream_inflight_slot = 0;
+  team.dxa_stream_pending_copies.clear();
+  team.dxa_slot_waiters[0].reset();
+  team.dxa_slot_waiters[1].reset();
+
+  for (uint32_t i = 0; i < 2; ++i) {
+    team.dxa_stream_base[i] = TeamState::CopyDesc{
+      i,
+      leader_ctx.copy_mode[i],
+      leader_ctx.global_addr[i],
+      leader_ctx.src_offset[i],
+      leader_ctx.copy_size[i],
+      leader_ctx.dst_mask[i],
+      leader_ctx.copy_tile_rows[i],
+      leader_ctx.copy_global_stride[i],
+      leader_core_id,
+    };
+    team.dxa_slot_panel[i] = 0xffffffff;
+    team.dxa_slot_ready[i] = false;
+  }
+  team.dxa_stream_panel_slot_bytes = 2 * team.dxa_stream_base[0].copy_size
+                                   + 2 * team.dxa_stream_base[1].copy_size;
+
+  for (auto local_id : team.participants) {
+    team.dxa_next_wait_panel[local_id] = 0;
+  }
+
+  try_schedule_dxa_stream(team);
+
+  for (auto local_id : team.participants) {
+    auto* team_core = this->get_core(local_id);
+    team_core->emulator().clear_cooperative_copy();
+    uint32_t socket_id = local_id / cores_per_socket;
+    uint32_t socket_core_id = local_id % cores_per_socket;
+    sockets_.at(socket_id)->resume(socket_core_id);
+  }
+  team.arrived.reset();
+}
+
+void Cluster::cooperative_dxa_wait_slot(uint32_t core_id, uint32_t slot) {
+  auto sockets_per_cluster = sockets_.size();
+  auto cores_per_socket = cores_per_socket_;
+  uint32_t cores_per_cluster = sockets_per_cluster * cores_per_socket;
+  uint32_t local_core_id = core_id % cores_per_cluster;
+
+  auto* core = this->get_core(local_core_id);
+  auto& coop = core->emulator().cooperative_ctx();
+  auto& team = get_team_state(local_core_id, coop);
+  assert(slot < 2);
+  assert(team.dxa_stream_active);
+
+  uint32_t target_panel = team.dxa_next_wait_panel[local_core_id];
+  if (target_panel >= team.dxa_stream_panel_count) {
+    uint32_t socket_id = local_core_id / cores_per_socket;
+    uint32_t socket_core_id = local_core_id % cores_per_socket;
+    sockets_.at(socket_id)->resume(socket_core_id);
+    return;
+  }
+  assert((target_panel & 1u) == slot);
+
+  if (team.dxa_slot_ready[slot] && team.dxa_slot_panel[slot] == target_panel) {
+    ++team.dxa_next_wait_panel[local_core_id];
+    uint32_t socket_id = local_core_id / cores_per_socket;
+    uint32_t socket_core_id = local_core_id % cores_per_socket;
+    sockets_.at(socket_id)->resume(socket_core_id);
+    try_schedule_dxa_stream(team);
+    return;
+  }
+
+  team.dxa_slot_waiters[slot].set(local_core_id);
+  DP(3, "*** DXA stream wait core #" << core_id << " slot #" << slot
+        << " panel #" << target_panel << " in cooperative team #" << coop.team_id);
 }
 
 bool Cluster::is_team_panel_addr(uint64_t addr) const {
@@ -489,6 +602,43 @@ void Cluster::write_team_panel(TeamState& team,
   std::memcpy(team.panel_store.data() + panel_offset, data.data(), data.size());
 }
 
+void Cluster::execute_dxa_panel_copy(TeamState& team, const TeamState::CopyDesc& copy_desc) {
+  assert(copy_desc.tile_rows != 0);
+  assert((copy_desc.copy_size % copy_desc.tile_rows) == 0);
+
+  uint32_t team_size_y = team.team_size / team.team_size_x;
+  uint32_t row_bytes = copy_desc.copy_size / copy_desc.tile_rows;
+
+  if (copy_desc.copy_idx == 0) {
+    for (uint32_t rank_y = 0; rank_y < team_size_y; ++rank_y) {
+      auto panel_desc = copy_desc;
+      panel_desc.global_addr += uint64_t(rank_y) * copy_desc.tile_rows * copy_desc.global_stride;
+      panel_desc.src_offset += rank_y * copy_desc.copy_size;
+      auto panel = fetch_global_tile(panel_desc);
+      write_team_panel(team, panel_desc.src_offset, panel);
+    }
+  } else {
+    for (uint32_t rank_x = 0; rank_x < team.team_size_x; ++rank_x) {
+      auto panel_desc = copy_desc;
+      panel_desc.global_addr += uint64_t(rank_x) * row_bytes;
+      panel_desc.src_offset += rank_x * copy_desc.copy_size;
+      auto panel = fetch_global_tile(panel_desc);
+      write_team_panel(team, panel_desc.src_offset, panel);
+    }
+  }
+}
+
+void Cluster::complete_dxa_stream_transfer(TeamState& team) {
+  for (const auto& copy_desc : team.dxa_stream_pending_copies) {
+    execute_dxa_panel_copy(team, copy_desc);
+  }
+  team.dxa_stream_pending_copies.clear();
+  team.dxa_slot_panel[team.dxa_stream_inflight_slot] = team.dxa_stream_inflight_panel;
+  team.dxa_slot_ready[team.dxa_stream_inflight_slot] = true;
+  team.dxa_stream_inflight = false;
+  resume_dxa_slot_waiters(team);
+}
+
 void Cluster::execute_pending_copies(TeamState& team) {
   for (auto src_core_id : team.participants) {
     auto* src_core = this->get_core(src_core_id);
@@ -500,6 +650,19 @@ void Cluster::execute_pending_copies(TeamState& team) {
       std::vector<uint8_t> multicast_buffer;
       if (src_ctx.copy_mode[copy_idx] == kGlobalMulticastMode) {
         multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
+      } else if (src_ctx.copy_mode[copy_idx] == kDxaStreamMode) {
+        execute_dxa_panel_copy(team, TeamState::CopyDesc{
+          copy_idx,
+          src_ctx.copy_mode[copy_idx],
+          src_ctx.global_addr[copy_idx],
+          src_ctx.src_offset[copy_idx],
+          src_ctx.copy_size[copy_idx],
+          src_ctx.dst_mask[copy_idx],
+          src_ctx.copy_tile_rows[copy_idx],
+          src_ctx.copy_global_stride[copy_idx],
+          src_core_id,
+        });
+        continue;
       } else if (is_panel_mode(src_ctx.copy_mode[copy_idx])) {
         multicast_buffer = fetch_global_tile(src_ctx, copy_idx);
         write_team_panel(team,
@@ -532,6 +695,9 @@ void Cluster::execute_pending_copies(TeamState& team) {
     std::vector<uint8_t> multicast_buffer;
     if (copy_desc.copy_mode == kGlobalMulticastMode) {
       multicast_buffer = fetch_global_tile(copy_desc);
+    } else if (copy_desc.copy_mode == kDxaStreamMode) {
+      execute_dxa_panel_copy(team, copy_desc);
+      continue;
     } else if (is_panel_mode(copy_desc.copy_mode)) {
       multicast_buffer = fetch_global_tile(copy_desc);
       write_team_panel(team,
@@ -577,15 +743,109 @@ void Cluster::resume_waiters(TeamState& team) {
   }
 }
 
+void Cluster::resume_dxa_slot_waiters(TeamState& team) {
+  auto cores_per_socket = cores_per_socket_;
+  for (uint32_t slot = 0; slot < 2; ++slot) {
+    for (auto local_id : team.participants) {
+      if (!team.dxa_slot_waiters[slot].test(local_id))
+        continue;
+      uint32_t target_panel = team.dxa_next_wait_panel[local_id];
+      if (!team.dxa_slot_ready[slot] || team.dxa_slot_panel[slot] != target_panel)
+        continue;
+      ++team.dxa_next_wait_panel[local_id];
+      uint32_t socket_id = local_id / cores_per_socket;
+      uint32_t socket_core_id = local_id % cores_per_socket;
+      sockets_.at(socket_id)->resume(socket_core_id);
+      team.dxa_slot_waiters[slot].reset(local_id);
+    }
+  }
+}
+
+bool Cluster::can_overwrite_dxa_slot(const TeamState& team, uint32_t slot) const {
+  if (!team.dxa_slot_ready[slot])
+    return true;
+
+  uint32_t old_panel = team.dxa_slot_panel[slot];
+  if (old_panel == 0xffffffff)
+    return true;
+
+  for (auto local_id : team.participants) {
+    auto it = team.dxa_next_wait_panel.find(local_id);
+    if (it == team.dxa_next_wait_panel.end() || it->second < old_panel + 2)
+      return false;
+  }
+  return true;
+}
+
+void Cluster::try_schedule_dxa_stream(TeamState& team) {
+  if (!team.dxa_stream_active || team.dxa_stream_inflight || team.transfer_cycles != 0)
+    return;
+  if (team.dxa_stream_next_issue >= team.dxa_stream_panel_count)
+    return;
+
+  uint32_t panel = team.dxa_stream_next_issue;
+  uint32_t slot = panel & 1u;
+  if (!can_overwrite_dxa_slot(team, slot))
+    return;
+
+  auto a_desc = team.dxa_stream_base[0];
+  auto b_desc = team.dxa_stream_base[1];
+  uint32_t a_row_bytes = a_desc.copy_size / a_desc.tile_rows;
+
+  a_desc.global_addr += uint64_t(panel) * a_row_bytes;
+  b_desc.global_addr += uint64_t(panel) * b_desc.tile_rows * b_desc.global_stride;
+  a_desc.src_offset += slot * team.dxa_stream_panel_slot_bytes;
+  b_desc.src_offset += slot * team.dxa_stream_panel_slot_bytes;
+
+  team.dxa_slot_ready[slot] = false;
+  team.dxa_slot_panel[slot] = 0xffffffff;
+  team.dxa_stream_pending_copies.clear();
+  team.dxa_stream_pending_copies.push_back(a_desc);
+  team.dxa_stream_pending_copies.push_back(b_desc);
+  team.dxa_stream_inflight = true;
+  team.dxa_stream_inflight_panel = panel;
+  team.dxa_stream_inflight_slot = slot;
+  ++team.dxa_stream_next_issue;
+  team.transfer_cycles = estimate_transfer_cycles(team, team.dxa_stream_pending_copies);
+}
+
+uint32_t Cluster::estimate_transfer_cycles(const TeamState& team, const std::vector<TeamState::CopyDesc>& copies) const {
+  uint32_t source_bytes = 0;
+  uint32_t fanout_bytes = 0;
+  for (const auto& copy_desc : copies) {
+    if (copy_desc.copy_mode == kDxaStreamMode) {
+      uint32_t team_size_y = team.team_size / team.team_size_x;
+      uint32_t copies = (copy_desc.copy_idx == 0) ? team_size_y : team.team_size_x;
+      source_bytes += copy_desc.copy_size * copies;
+      continue;
+    } else {
+      source_bytes += copy_desc.copy_size;
+    }
+    if (copy_desc.copy_mode == kTeamPanelMode
+     || copy_desc.copy_mode == kDxaStreamMode) {
+      fanout_bytes += copy_desc.copy_size;
+    } else {
+      fanout_bytes += copy_desc.copy_size * std::max<uint32_t>(1, __builtin_popcount(copy_desc.dst_mask));
+    }
+  }
+  uint32_t cycles = (source_bytes + 15) / 16 + (fanout_bytes + 31) / 32;
+  return std::max<uint32_t>(1, cycles);
+}
+
 uint32_t Cluster::estimate_transfer_cycles(const TeamState& team) const {
   uint32_t source_bytes = 0;
   uint32_t fanout_bytes = 0;
   for (const auto& copy_desc : team.pending_copies) {
-    if (copy_desc.copy_mode == kTeamPanelOracleMode) {
+    if (copy_desc.copy_mode == kDxaStreamMode) {
+      uint32_t team_size_y = team.team_size / team.team_size_x;
+      uint32_t copies = (copy_desc.copy_idx == 0) ? team_size_y : team.team_size_x;
+      source_bytes += copy_desc.copy_size * copies;
       continue;
+    } else {
+      source_bytes += copy_desc.copy_size;
     }
-    source_bytes += copy_desc.copy_size;
-    if (copy_desc.copy_mode == kTeamPanelMode) {
+    if (copy_desc.copy_mode == kTeamPanelMode
+     || copy_desc.copy_mode == kDxaStreamMode) {
       fanout_bytes += copy_desc.copy_size;
     } else {
       fanout_bytes += copy_desc.copy_size * std::max<uint32_t>(1, __builtin_popcount(copy_desc.dst_mask));

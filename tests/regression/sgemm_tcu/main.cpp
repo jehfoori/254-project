@@ -408,6 +408,7 @@ vx_buffer_h B_buffer = nullptr;
 vx_buffer_h C_buffer = nullptr;
 vx_buffer_h krnl_buffer = nullptr;
 vx_buffer_h args_buffer = nullptr;
+vx_buffer_h stats_buffer = nullptr;
 kernel_arg_t kernel_arg = {};
 
 std::string last_build_options;
@@ -453,6 +454,9 @@ void cleanup() {
     vx_mem_free(C_buffer);
     vx_mem_free(krnl_buffer);
     vx_mem_free(args_buffer);
+    if (stats_buffer) {
+      vx_mem_free(stats_buffer);
+    }
     vx_dev_close(device);
   }
 }
@@ -556,8 +560,8 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  if ((N % cfg::tileN) != 0) {
-    std::cout << "Error: M must be a multiple of tensor tileN!" << std::endl;
+  if ((N % (cfg::tileN * SGEMM_TCU_N_TILES)) != 0) {
+    std::cout << "Error: N must be a multiple of tensor tileN * SGEMM_TCU_N_TILES!" << std::endl;
     return -1;
   }
 
@@ -577,12 +581,34 @@ int main(int argc, char *argv[]) {
   std::cout << "matrix A: " << M << "x" << K << std::endl;
   std::cout << "matrix B: " << K << "x" << N << std::endl;
   std::cout << "matrix C: " << M << "x" << N << std::endl;
+  std::cout << "local-memory staging: " << (SGEMM_TCU_USE_LMEM ? "on" : "off") << std::endl;
+  std::cout << "N tiles per block: " << SGEMM_TCU_N_TILES << std::endl;
+  std::cout << "timing stats: " << (SGEMM_TCU_TIMING_STATS ? "on" : "off") << std::endl;
+
+  uint32_t local_mem = 0;
+  if (SGEMM_TCU_USE_LMEM) {
+    local_mem = (cfg::tileM * cfg::tileK + cfg::tileK * cfg::tileN * SGEMM_TCU_N_TILES) * sizeof(itype_t);
+  }
+  std::cout << "local memory: " << local_mem << " bytes" << std::endl;
+  uint32_t max_localmem = 0;
+  RT_CHECK(vx_check_occupancy(device, NUM_THREADS, &max_localmem));
+  std::cout << "occupancy: max_localmem=" << max_localmem << " bytes" << std::endl;
+  if (max_localmem < local_mem) {
+    std::cout << "Error: not enough local memory: needed=" << local_mem
+              << ", available=" << max_localmem << std::endl;
+    cleanup();
+    return -1;
+  }
 
   // set block size to warp size
-  kernel_arg.grid_dim[0] = N / cfg::tileN;
+  kernel_arg.grid_dim[0] = N / (cfg::tileN * SGEMM_TCU_N_TILES);
   kernel_arg.grid_dim[1] = M / cfg::tileM;
   kernel_arg.block_dim[0] = NT; // warp sizeb
   kernel_arg.block_dim[1] = 1;
+  uint32_t block_count = kernel_arg.grid_dim[0] * kernel_arg.grid_dim[1];
+#if !SGEMM_TCU_TIMING_STATS
+  (void)block_count;
+#endif
 
   // set matrix dimensions
   kernel_arg.M = M;
@@ -597,10 +623,19 @@ int main(int argc, char *argv[]) {
   RT_CHECK(vx_mem_address(B_buffer, &kernel_arg.B_addr));
   RT_CHECK(vx_mem_alloc(device, sizeC * sizeof(otype_t), VX_MEM_WRITE, &C_buffer));
   RT_CHECK(vx_mem_address(C_buffer, &kernel_arg.C_addr));
+#if SGEMM_TCU_TIMING_STATS
+  size_t stats_buf_size = block_count * sizeof(timing_stats_t);
+  RT_CHECK(vx_mem_alloc(device, stats_buf_size, VX_MEM_WRITE, &stats_buffer));
+  RT_CHECK(vx_mem_address(stats_buffer, &kernel_arg.stats_addr));
+#endif
 
   std::cout << "A_addr=0x" << std::hex << kernel_arg.A_addr << std::endl;
   std::cout << "B_addr=0x" << std::hex << kernel_arg.B_addr << std::endl;
   std::cout << "C_addr=0x" << std::hex << kernel_arg.C_addr << std::endl;
+#if SGEMM_TCU_TIMING_STATS
+  std::cout << "stats_addr=0x" << std::hex << kernel_arg.stats_addr << std::endl;
+#endif
+  std::cout << std::dec;
 
   // generate source data
   std::vector<itype_t> h_A(sizeA);
@@ -658,6 +693,11 @@ int main(int argc, char *argv[]) {
   std::vector<otype_t> h_C(sizeC);
   std::cout << "download destination buffer" << std::endl;
   RT_CHECK(vx_copy_from_dev(h_C.data(), C_buffer, 0, sizeC * sizeof(otype_t)));
+#if SGEMM_TCU_TIMING_STATS
+  std::vector<timing_stats_t> h_stats(block_count);
+  std::cout << "download timing stats buffer" << std::endl;
+  RT_CHECK(vx_copy_from_dev(h_stats.data(), stats_buffer, 0, stats_buf_size));
+#endif
 
   // verify result
   std::cout << "verify result" << std::endl;
@@ -672,6 +712,38 @@ int main(int argc, char *argv[]) {
       }
     }
   }
+
+#if SGEMM_TCU_TIMING_STATS
+  uint64_t total_timing_total_cycles = 0;
+  uint64_t total_timing_stage_cycles = 0;
+  uint64_t total_timing_operand_load_cycles = 0;
+  uint64_t total_timing_mma_cycles = 0;
+  uint64_t total_timing_post_iter_sync_cycles = 0;
+  uint64_t total_timing_store_cycles = 0;
+  for (const auto& stats : h_stats) {
+    total_timing_total_cycles += stats.total_cycles;
+    total_timing_stage_cycles += stats.stage_cycles;
+    total_timing_operand_load_cycles += stats.operand_load_cycles;
+    total_timing_mma_cycles += stats.mma_cycles;
+    total_timing_post_iter_sync_cycles += stats.post_iter_sync_cycles;
+    total_timing_store_cycles += stats.store_cycles;
+  }
+  uint64_t mma_steps = uint64_t(block_count) * (K / cfg::tileK) * SGEMM_TCU_N_TILES;
+  std::cout << "timing total cycles: " << total_timing_total_cycles << std::endl;
+  std::cout << "timing stage cycles: " << total_timing_stage_cycles << std::endl;
+  std::cout << "timing operand load cycles: " << total_timing_operand_load_cycles << std::endl;
+  std::cout << "timing mma cycles: " << total_timing_mma_cycles << std::endl;
+  std::cout << "timing post-iter sync cycles: " << total_timing_post_iter_sync_cycles << std::endl;
+  std::cout << "timing store cycles: " << total_timing_store_cycles << std::endl;
+  if (mma_steps != 0) {
+    std::cout << "timing operand load cycles per mma: "
+              << double(total_timing_operand_load_cycles) / double(mma_steps)
+              << std::endl;
+    std::cout << "timing stage cycles per mma: "
+              << double(total_timing_stage_cycles) / double(mma_steps)
+              << std::endl;
+  }
+#endif
 
   // cleanup
   std::cout << "cleanup" << std::endl;

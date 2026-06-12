@@ -34,22 +34,6 @@ public:
     CacheSim::PerfStats l2cache;
   };
 
-  struct TeamTensorStats {
-    uint64_t commands;
-    uint64_t mma_steps;
-    uint64_t input_bytes;
-    uint64_t output_bytes;
-    uint64_t modeled_cycles;
-
-    TeamTensorStats()
-      : commands(0)
-      , mma_steps(0)
-      , input_bytes(0)
-      , output_bytes(0)
-      , modeled_cycles(0)
-    {}
-  };
-
   std::vector<SimPort<MemReq>> mem_req_ports;
   std::vector<SimPort<MemRsp>> mem_rsp_ports;
 
@@ -88,9 +72,10 @@ public:
   void cooperative_barrier(uint32_t core_id);
   void cooperative_arrive(uint32_t core_id);
   void cooperative_wait(uint32_t core_id);
+  void cooperative_dxa_start(uint32_t core_id);
+  void cooperative_dxa_wait_slot(uint32_t core_id, uint32_t slot);
   bool is_team_panel_addr(uint64_t addr) const;
   void team_panel_read(uint32_t core_id, void* data, uint64_t addr, uint32_t size);
-  uint32_t team_tensor_mma(uint32_t core_id, uint32_t n_tiles);
 
   PerfStats perf_stats() const;
 
@@ -101,6 +86,7 @@ public:
 private:
   struct TeamState {
     struct CopyDesc {
+      uint32_t copy_idx;
       uint32_t copy_mode;
       uint64_t global_addr;
       uint32_t src_offset;
@@ -124,6 +110,19 @@ private:
     std::vector<CopyDesc> pending_copies;
     std::vector<uint8_t> panel_store;
     std::unordered_map<uint32_t, uint32_t> wait_epoch;
+    bool dxa_stream_active;
+    bool dxa_stream_inflight;
+    uint32_t dxa_stream_panel_count;
+    uint32_t dxa_stream_next_issue;
+    uint32_t dxa_stream_inflight_panel;
+    uint32_t dxa_stream_inflight_slot;
+    uint32_t dxa_stream_panel_slot_bytes;
+    CopyDesc dxa_stream_base[2];
+    std::vector<CopyDesc> dxa_stream_pending_copies;
+    uint32_t dxa_slot_panel[2];
+    bool dxa_slot_ready[2];
+    CoreMask dxa_slot_waiters[2];
+    std::unordered_map<uint32_t, uint32_t> dxa_next_wait_panel;
 
     TeamState()
       : team_size(0)
@@ -132,22 +131,36 @@ private:
       , transfer_cycles(0)
       , transfer_epoch(0)
       , ready_epoch(0)
-    {}
+      , dxa_stream_active(false)
+      , dxa_stream_inflight(false)
+      , dxa_stream_panel_count(0)
+      , dxa_stream_next_issue(0)
+      , dxa_stream_inflight_panel(0)
+      , dxa_stream_inflight_slot(0)
+      , dxa_stream_panel_slot_bytes(0)
+    {
+      for (uint32_t i = 0; i < 2; ++i) {
+        dxa_stream_base[i] = {};
+        dxa_slot_panel[i] = 0xffffffff;
+        dxa_slot_ready[i] = false;
+      }
+    }
   };
 
   Core* get_core(uint32_t local_core_id) const;
   std::vector<uint8_t> fetch_global_tile(const cooperative_ctx_t& ctx, uint32_t copy_idx) const;
   std::vector<uint8_t> fetch_global_tile(const TeamState::CopyDesc& copy_desc) const;
   TeamState& get_team_state(uint32_t local_core_id, const cooperative_ctx_t& coop);
-  void write_team_panel(TeamState& team,
-                        uint32_t panel_offset,
-                        const std::vector<uint8_t>& data);
+  void write_team_panel(TeamState& team, uint32_t panel_offset, const std::vector<uint8_t>& data);
+  void execute_dxa_panel_copy(TeamState& team, const TeamState::CopyDesc& copy_desc);
+  void complete_dxa_stream_transfer(TeamState& team);
   void execute_pending_copies(TeamState& team);
   void resume_waiters(TeamState& team);
+  void resume_dxa_slot_waiters(TeamState& team);
+  void try_schedule_dxa_stream(TeamState& team);
+  bool can_overwrite_dxa_slot(const TeamState& team, uint32_t slot) const;
+  uint32_t estimate_transfer_cycles(const TeamState& team, const std::vector<TeamState::CopyDesc>& copies) const;
   uint32_t estimate_transfer_cycles(const TeamState& team) const;
-  uint32_t estimate_team_tensor_cycles(uint32_t input_bytes,
-                                       uint32_t output_bytes,
-                                       uint32_t mma_steps) const;
 
   uint32_t                    cluster_id_;
   ProcessorImpl*              processor_;
@@ -157,7 +170,6 @@ private:
   std::unordered_map<uint32_t, TeamState> cooperative_teams_;
   CacheSim::Ptr               l2cache_;
   uint32_t                    cores_per_socket_;
-  TeamTensorStats             team_tensor_stats_;
 };
 
 } // namespace vortex
