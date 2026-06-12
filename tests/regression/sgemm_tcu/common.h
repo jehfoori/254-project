@@ -15,6 +15,14 @@
 #define OTYPE fp32
 #endif
 
+#ifndef SGEMM_TCU_USE_LMEM
+#define SGEMM_TCU_USE_LMEM 0
+#endif
+
+#ifndef SGEMM_TCU_N_TILES
+#define SGEMM_TCU_N_TILES 1
+#endif
+
 typedef struct {
   uint32_t grid_dim[2];
   uint32_t block_dim[2];

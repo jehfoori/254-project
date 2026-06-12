@@ -15,39 +15,84 @@ void kernel_body(kernel_arg_t *__UNIFORM__ arg) {
   uint32_t K = arg->K;
 
   ctx::fragment_a   fragA;
-  ctx::fragment_b   fragB;
-  ctx::fragment_acc fragC;
+  ctx::fragment_b   fragB[SGEMM_TCU_N_TILES];
+  ctx::fragment_acc fragC[SGEMM_TCU_N_TILES];
+
+#if SGEMM_TCU_USE_LMEM
+  static_assert(vt::ITYPE::bits >= 8, "SGEMM_TCU_USE_LMEM supports byte-or-larger input types");
+#endif
+  static_assert(SGEMM_TCU_N_TILES >= 1, "SGEMM_TCU_N_TILES must be at least one");
+  static_assert(vt::ITYPE::bits >= 8 || SGEMM_TCU_N_TILES == 1,
+                "SGEMM_TCU_N_TILES > 1 is only supported for byte-or-larger input types");
+  constexpr uint32_t a_tile_elems = ctx::tileM * ctx::tileK;
+  constexpr uint32_t b_strip_elems = ctx::tileK * ctx::tileN * SGEMM_TCU_N_TILES;
+#if SGEMM_TCU_USE_LMEM
+  auto local_A = reinterpret_cast<ctx::input_t *>(__local_mem((a_tile_elems + b_strip_elems) * sizeof(ctx::input_t)));
+  auto local_B = local_A + a_tile_elems;
+#endif
 
   // calculate tile row & column based on block index
   uint32_t tile_row = blockIdx.y * ctx::tileM;
-  uint32_t tile_col = blockIdx.x * ctx::tileN;
+  uint32_t tile_col = blockIdx.x * ctx::tileN * SGEMM_TCU_N_TILES;
 
   // Initialize accumulator tile to zero
-  ctx::fill_fragment(fragC, 0);
+  for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+    ctx::fill_fragment(fragC[n_tile], 0);
+  }
 
   for (int i = 0; i < K; i += ctx::tileK) {
+#if SGEMM_TCU_USE_LMEM
+    for (uint32_t elem = threadIdx.x; elem < a_tile_elems; elem += blockDim.x) {
+      uint32_t row = elem / ctx::tileK;
+      uint32_t col = elem % ctx::tileK;
+      local_A[elem] = pA[(tile_row + row) * K + i + col];
+    }
+    for (uint32_t elem = threadIdx.x; elem < b_strip_elems; elem += blockDim.x) {
+      uint32_t row = elem / (ctx::tileN * SGEMM_TCU_N_TILES);
+      uint32_t col = elem % (ctx::tileN * SGEMM_TCU_N_TILES);
+      local_B[elem] = pB[(i + row) * N + tile_col + col];
+    }
+    __syncthreads();
+
+    ctx::load_matrix_sync(fragA, local_A, ctx::tileK);
+    for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+      ctx::load_matrix_sync(fragB[n_tile],
+                            local_B + n_tile * ctx::tileN,
+                            ctx::tileN * SGEMM_TCU_N_TILES);
+    }
+#else
     auto pTileA = pA + tile_row * K + i;
 
     // Load A tile
     ctx::load_matrix_sync(fragA, pTileA, K);
 
-    // Load B tile
-    if constexpr (vt::ITYPE::bits < 8) {
-      // For sub-byte matrix B must be in col-major format
-      auto pTileB = pB + tile_col * K + i;
-      ctx::load_matrix_sync<vt::col_major>(fragB, pTileB, K);
-    } else {
-      auto pTileB = pB + i * N + tile_col;
-      ctx::load_matrix_sync(fragB, pTileB, N);
+    for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+      uint32_t n_col = tile_col + n_tile * ctx::tileN;
+      if constexpr (vt::ITYPE::bits < 8) {
+        // For sub-byte matrix B must be in col-major format.
+        auto pTileB = pB + n_col * K + i;
+        ctx::load_matrix_sync<vt::col_major>(fragB[n_tile], pTileB, K);
+      } else {
+        auto pTileB = pB + i * N + n_col;
+        ctx::load_matrix_sync(fragB[n_tile], pTileB, N);
+      }
     }
+#endif
 
     // Matrix multiply-accumulate: c += a * b
-    ctx::mma_sync(fragC, fragA, fragB, fragC);
+    for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+      ctx::mma_sync(fragC[n_tile], fragA, fragB[n_tile], fragC[n_tile]);
+    }
+#if SGEMM_TCU_USE_LMEM
+    __syncthreads();
+#endif
   }
 
   // Store the computed C tile
-  auto pTileC = pC + tile_row * N + tile_col;
-  ctx::store_matrix_sync(pTileC, fragC, N);
+  for (uint32_t n_tile = 0; n_tile < SGEMM_TCU_N_TILES; ++n_tile) {
+    auto pTileC = pC + tile_row * N + tile_col + n_tile * ctx::tileN;
+    ctx::store_matrix_sync(pTileC, fragC[n_tile], N);
+  }
 }
 
 int main() {

@@ -32,13 +32,12 @@ using otype_t = typename vt::OTYPE::dtype;
 
 static_assert(vt::ITYPE::bits == 16, "coop_sgemm_tcu currently assumes 16-bit tensor inputs");
 static_assert(vt::OTYPE::bits == 32, "coop_sgemm_tcu currently assumes 32-bit tensor outputs");
-static_assert(cfg::tileM == cfg::tileK, "coop_sgemm_tcu assumes tileM == tileK for shared multicast shape");
+static_assert(cfg::tileM == cfg::tileK, "coop_sgemm_tcu assumes tileM == tileK for panel layout");
 
 static const char* kernel_file = "kernel.vxbin";
 static uint32_t xm = 32;
 static uint32_t xn = 32;
 static uint32_t xk = 32;
-static uint32_t mode = 0;
 
 static vx_device_h device = nullptr;
 static vx_buffer_h A_buffer = nullptr;
@@ -90,15 +89,13 @@ static void matmul_cpu(float* out, const uint16_t* A, const uint16_t* B, uint32_
 }
 
 static void show_usage() {
-  std::cout << "Vortex cooperative tensor GEMM test.\n";
-  std::cout << "Usage: [-f kernel] [-m rows] [-n cols] [-k inner] [-c 0|1] [-h]\n";
-  std::cout << "  -c 0: shared-panel async\n";
-  std::cout << "  -c 1: oracle shared-panel async\n";
+  std::cout << "Vortex cooperative tensor GEMM DXA panel test.\n";
+  std::cout << "Usage: [-f kernel] [-m rows] [-n cols] [-k inner] [-h]\n";
 }
 
 static void parse_args(int argc, char** argv) {
   int c;
-  while ((c = getopt(argc, argv, "m:n:k:c:f:h")) != -1) {
+  while ((c = getopt(argc, argv, "m:n:k:f:h")) != -1) {
     switch (c) {
     case 'm':
       xm = atoi(optarg);
@@ -108,9 +105,6 @@ static void parse_args(int argc, char** argv) {
       break;
     case 'k':
       xk = atoi(optarg);
-      break;
-    case 'c':
-      mode = atoi(optarg);
       break;
     case 'f':
       kernel_file = optarg;
@@ -172,11 +166,6 @@ int main(int argc, char* argv[]) {
   uint32_t M = xm;
   uint32_t N = xn;
   uint32_t K = xk;
-  if (mode > 1) {
-    std::cout << "Error: copy mode must be 0 (shared-panel async) or 1 (oracle shared-panel async)" << std::endl;
-    cleanup();
-    return -1;
-  }
   if ((M % cfg::tileM) != 0 || (N % cfg::tileN) != 0 || (K % cfg::tileK) != 0) {
     std::cout << "Error: matrix dimensions must be multiples of tensor tile sizes" << std::endl;
     cleanup();
@@ -208,21 +197,21 @@ int main(int argc, char* argv[]) {
 #if COOP_PROFILE_STATS
   uint32_t stats_buf_size = block_count * sizeof(block_stats_t);
 #endif
-  uint32_t local_mem = 0;
   uint32_t num_k_tiles = K / cfg::tileK;
-  uint32_t num_k_panels = (num_k_tiles + PANEL_K_TILES - 1) / PANEL_K_TILES;
+  if ((num_k_tiles % PANEL_K_TILES) != 0) {
+    std::cout << "Error: K tile count must be divisible by PANEL_K_TILES for the DXA panel baseline" << std::endl;
+    cleanup();
+    return -1;
+  }
   constexpr uint32_t team_panel_window = 0x10000;
   uint32_t a_panel_bytes = PANEL_K_TILES * cfg::tileM * cfg::tileK * COOP_M_TILES * sizeof(itype_t);
   uint32_t b_panel_bytes = PANEL_K_TILES * cfg::tileK * cfg::tileN * COOP_N_TILES * sizeof(itype_t);
   uint32_t panel_slot_bytes = 2 * a_panel_bytes + 2 * b_panel_bytes;
-  uint32_t active_panel_slots = (num_k_panels > 1) ? 2 : 1;
+  uint32_t active_panel_slots = (num_k_tiles > PANEL_K_TILES) ? 2 : 1;
   uint32_t required_panel_bytes = active_panel_slots * panel_slot_bytes;
   if (required_panel_bytes > team_panel_window) {
     std::cout << "Error: panel store window too small: needed=" << required_panel_bytes
-              << ", available=" << team_panel_window
-              << " (PANEL_K_TILES=" << PANEL_K_TILES
-              << ", COOP_N_TILES=" << COOP_N_TILES
-              << ", active_slots=" << active_panel_slots << ")" << std::endl;
+              << ", available=" << team_panel_window << std::endl;
     cleanup();
     return -1;
   }
@@ -233,7 +222,6 @@ int main(int argc, char* argv[]) {
   kernel_arg.block_dim[1] = 1;
   kernel_arg.team_dim[0] = 2;
   kernel_arg.team_dim[1] = 2;
-  kernel_arg.mode = mode;
   kernel_arg.M = M;
   kernel_arg.N = N;
   kernel_arg.K = K;
@@ -248,19 +236,14 @@ int main(int argc, char* argv[]) {
   std::cout << "panel K tiles: " << PANEL_K_TILES << std::endl;
   std::cout << "cooperative M tiles: " << COOP_M_TILES << std::endl;
   std::cout << "cooperative N tiles: " << COOP_N_TILES << std::endl;
+  std::cout << "DXA pipeline: on" << std::endl;
   std::cout << "profile stats: " << (COOP_PROFILE_STATS ? "on" : "off") << std::endl;
-  std::cout << "copy mode: " << (mode == 0 ? "shared-panel-async" : "oracle-panel-async") << std::endl;
-  std::cout << "local memory: " << local_mem << " bytes" << std::endl;
+  std::cout << "copy mode: dxa-panel" << std::endl;
+  std::cout << "local memory: 0 bytes" << std::endl;
 
   uint32_t max_localmem = 0;
   RT_CHECK(vx_check_occupancy(device, NUM_THREADS, &max_localmem));
   std::cout << "occupancy: max_localmem=" << max_localmem << " bytes" << std::endl;
-  if (max_localmem < local_mem) {
-    std::cout << "Error: not enough local memory: needed=" << local_mem
-              << ", available=" << max_localmem << std::endl;
-    cleanup();
-    return -1;
-  }
 
   std::cout << "allocate device memory" << std::endl;
   RT_CHECK(vx_mem_alloc(device, sizeA * sizeof(itype_t), VX_MEM_READ, &A_buffer));
@@ -325,21 +308,21 @@ int main(int argc, char* argv[]) {
 
 #if COOP_PROFILE_STATS
   uint32_t macro_grid_x = grid_x / 2;
-  uint32_t total_a_tile_loads = 0;
-  uint32_t total_b_tile_loads = 0;
+  uint32_t num_k_panels = num_k_tiles / PANEL_K_TILES;
+  uint32_t total_dxa_commands = 0;
+  uint32_t total_dxa_a_panels = 0;
+  uint32_t total_dxa_b_panels = 0;
   uint32_t total_team_barriers = 0;
-  uint32_t total_team_arrives = 0;
-  uint32_t total_team_waits = 0;
-  uint32_t total_transfer_events = 0;
-  uint32_t total_global_bytes = 0;
-  uint32_t total_fanout_bytes = 0;
-  uint32_t total_panel_write_bytes = 0;
+  uint32_t total_dxa_stream_commands = 0;
+  uint32_t total_dxa_slot_waits = 0;
+  uint32_t total_dxa_global_bytes = 0;
+  uint32_t total_baseline_global_bytes = 0;
+  uint32_t total_avoided_global_bytes = 0;
   uint32_t total_panel_read_bytes = 0;
-  uint32_t total_panel_transfers = 0;
   uint32_t total_mma_steps = 0;
   uint32_t total_partial_panels = 0;
-  uint32_t total_slot_reuse_barriers = 0;
   uint32_t has_partial_panel = ((num_k_tiles % PANEL_K_TILES) != 0) ? 1 : 0;
+
   for (uint32_t by = 0; by < grid_y; ++by) {
     for (uint32_t bx = 0; bx < grid_x; ++bx) {
       uint32_t idx = bx + by * grid_x;
@@ -347,119 +330,86 @@ int main(int argc, char* argv[]) {
       uint32_t expected_team_id = (bx / 2) + (by / 2) * macro_grid_x;
       uint32_t expected_rank_x = bx % 2;
       uint32_t expected_rank_y = by % 2;
-      uint32_t expected_a_loads = (expected_rank_x == 0) ? (num_k_tiles * COOP_M_TILES) : 0;
-      uint32_t expected_b_loads = (expected_rank_y == 0) ? (num_k_tiles * COOP_N_TILES) : 0;
-      uint32_t expected_transfer_events = 0;
-      expected_transfer_events += (expected_rank_x == 0) ? num_k_panels : 0;
-      expected_transfer_events += (expected_rank_y == 0) ? num_k_panels : 0;
-      uint32_t expected_global_bytes = (expected_a_loads * cfg::tileM * cfg::tileK
-                                      + expected_b_loads * cfg::tileK * cfg::tileN) * sizeof(itype_t);
-      uint32_t expected_fanout_bytes = 0;
-      uint32_t expected_panel_write_bytes = expected_global_bytes;
-      uint32_t expected_panel_read_bytes = num_k_tiles
-                                         * (COOP_M_TILES * cfg::tileM * cfg::tileK
-                                          + COOP_N_TILES * cfg::tileK * cfg::tileN)
-                                         * sizeof(itype_t);
-      uint32_t expected_panel_transfers = expected_transfer_events;
+      uint32_t expected_rank = expected_rank_y * 2 + expected_rank_x;
+      uint32_t expected_commands = (expected_rank == 0) ? 1 : 0;
+      uint32_t expected_stream_commands = expected_commands;
+      uint32_t expected_slot_waits = num_k_panels;
+      uint32_t expected_barriers = 0;
+      uint32_t expected_a_panels = (expected_rank == 0) ? num_k_panels * 2 : 0;
+      uint32_t expected_b_panels = (expected_rank == 0) ? num_k_panels * 2 : 0;
+      uint32_t expected_baseline_bytes = num_k_tiles
+                                       * (COOP_M_TILES * cfg::tileM * cfg::tileK
+                                        + COOP_N_TILES * cfg::tileK * cfg::tileN)
+                                       * sizeof(itype_t);
+      uint32_t expected_panel_read_bytes = expected_baseline_bytes;
       uint32_t expected_mma_steps = num_k_tiles * COOP_M_TILES * COOP_N_TILES;
       uint32_t expected_partial_panels = has_partial_panel;
-      uint32_t sync_steps = num_k_panels;
-      uint32_t expected_arrives = (sync_steps == 0) ? 0 : (sync_steps - 1);
-      uint32_t reuse_barriers = (num_k_panels > 2) ? (num_k_panels - 2) : 0;
-      uint32_t expected_barriers = (sync_steps == 0) ? 0 : 1 + reuse_barriers;
-      uint32_t expected_waits = expected_arrives;
       if (stats.team_id != expected_team_id
        || stats.team_rank_x != expected_rank_x
        || stats.team_rank_y != expected_rank_y
-       || stats.a_tile_loads != expected_a_loads
-       || stats.b_tile_loads != expected_b_loads
+       || stats.dxa_commands != expected_commands
+       || stats.dxa_a_panels != expected_a_panels
+       || stats.dxa_b_panels != expected_b_panels
        || stats.team_barriers != expected_barriers
-       || stats.team_arrives != expected_arrives
-       || stats.team_waits != expected_waits
-       || stats.transfer_events != expected_transfer_events
-       || stats.global_bytes != expected_global_bytes
-       || stats.fanout_bytes != expected_fanout_bytes
-       || stats.panel_write_bytes != expected_panel_write_bytes
+       || stats.dxa_stream_commands != expected_stream_commands
+       || stats.dxa_slot_waits != expected_slot_waits
+       || stats.baseline_global_bytes != expected_baseline_bytes
        || stats.panel_read_bytes != expected_panel_read_bytes
-       || stats.panel_transfers != expected_panel_transfers
        || stats.mma_steps != expected_mma_steps
-       || stats.partial_panels != expected_partial_panels
-       || stats.slot_reuse_barriers != reuse_barriers) {
+       || stats.partial_panels != expected_partial_panels) {
         std::cout << "*** stats error: block (" << bx << ", " << by << ")"
                   << " team_id=" << stats.team_id
                   << " rank=(" << stats.team_rank_x << ", " << stats.team_rank_y << ")"
-                  << " a_tiles=" << stats.a_tile_loads
-                  << " b_tiles=" << stats.b_tile_loads
+                  << " commands=" << stats.dxa_commands
+                  << " a_panels=" << stats.dxa_a_panels
+                  << " b_panels=" << stats.dxa_b_panels
                   << " barriers=" << stats.team_barriers
-                  << " arrives=" << stats.team_arrives
-                  << " waits=" << stats.team_waits
-                  << " transfers=" << stats.transfer_events
-                  << " global_bytes=" << stats.global_bytes
-                  << " fanout_bytes=" << stats.fanout_bytes
-                  << " panel_write_bytes=" << stats.panel_write_bytes
+                  << " stream_commands=" << stats.dxa_stream_commands
+                  << " slot_waits=" << stats.dxa_slot_waits
+                  << " dxa_global_bytes=" << stats.dxa_global_bytes
+                  << " baseline_global_bytes=" << stats.baseline_global_bytes
+                  << " avoided_global_bytes=" << stats.avoided_global_bytes
                   << " panel_read_bytes=" << stats.panel_read_bytes
-                  << " panel_transfers=" << stats.panel_transfers
                   << " mma_steps=" << stats.mma_steps
                   << " partial_panels=" << stats.partial_panels
-                  << " slot_reuse_barriers=" << stats.slot_reuse_barriers
                   << std::endl;
         ++errors;
       }
-      total_a_tile_loads += stats.a_tile_loads;
-      total_b_tile_loads += stats.b_tile_loads;
+      total_dxa_commands += stats.dxa_commands;
+      total_dxa_a_panels += stats.dxa_a_panels;
+      total_dxa_b_panels += stats.dxa_b_panels;
       total_team_barriers += stats.team_barriers;
-      total_team_arrives += stats.team_arrives;
-      total_team_waits += stats.team_waits;
-      total_transfer_events += stats.transfer_events;
-      total_global_bytes += stats.global_bytes;
-      total_fanout_bytes += stats.fanout_bytes;
-      total_panel_write_bytes += stats.panel_write_bytes;
+      total_dxa_stream_commands += stats.dxa_stream_commands;
+      total_dxa_slot_waits += stats.dxa_slot_waits;
+      total_dxa_global_bytes += stats.dxa_global_bytes;
+      total_baseline_global_bytes += stats.baseline_global_bytes;
+      total_avoided_global_bytes += stats.avoided_global_bytes;
       total_panel_read_bytes += stats.panel_read_bytes;
-      total_panel_transfers += stats.panel_transfers;
       total_mma_steps += stats.mma_steps;
       total_partial_panels += stats.partial_panels;
-      total_slot_reuse_barriers += stats.slot_reuse_barriers;
     }
   }
 
-  uint32_t cooperative_tile_loads = total_a_tile_loads + total_b_tile_loads;
-  uint32_t baseline_tile_loads = block_count * num_k_tiles * COOP_M_TILES * COOP_N_TILES * 2;
-  std::cout << "cooperative tile loads: " << cooperative_tile_loads
-            << " (A=" << total_a_tile_loads
-            << ", B=" << total_b_tile_loads << ")" << std::endl;
-  std::cout << "baseline tile loads: " << baseline_tile_loads << std::endl;
+  std::cout << "dxa commands: " << total_dxa_commands << std::endl;
+  std::cout << "dxa unique A panels: " << total_dxa_a_panels << std::endl;
+  std::cout << "dxa unique B panels: " << total_dxa_b_panels << std::endl;
   std::cout << "team barriers: " << total_team_barriers << std::endl;
-  std::cout << "team arrives: " << total_team_arrives << std::endl;
-  std::cout << "team waits: " << total_team_waits << std::endl;
-  std::cout << "slot reuse barriers: " << total_slot_reuse_barriers << std::endl;
-  std::cout << "transfer events: " << total_transfer_events << std::endl;
-  std::cout << "global transfer bytes: " << total_global_bytes << std::endl;
-  std::cout << "fanout write bytes: " << total_fanout_bytes << std::endl;
-  std::cout << "panel write bytes: " << total_panel_write_bytes << std::endl;
+  std::cout << "dxa stream commands: " << total_dxa_stream_commands << std::endl;
+  std::cout << "dxa slot waits: " << total_dxa_slot_waits << std::endl;
+  std::cout << "baseline local-staging global bytes: " << total_baseline_global_bytes << std::endl;
+  std::cout << "dxa unique global bytes: " << total_dxa_global_bytes << std::endl;
+  std::cout << "dxa avoided global bytes: " << total_avoided_global_bytes << std::endl;
   std::cout << "panel read bytes: " << total_panel_read_bytes << std::endl;
-  std::cout << "panel transfers: " << total_panel_transfers << std::endl;
   std::cout << "mma steps: " << total_mma_steps << std::endl;
   std::cout << "partial panels: " << total_partial_panels << std::endl;
-  if (total_transfer_events != 0) {
-    std::cout << "mma steps per transfer event: "
-              << double(total_mma_steps) / double(total_transfer_events) << std::endl;
-  }
-  if (total_team_barriers != 0) {
-    std::cout << "mma steps per team barrier: "
-              << double(total_mma_steps) / double(total_team_barriers) << std::endl;
-  }
-  uint32_t total_team_sync_events = total_team_barriers + total_team_arrives + total_team_waits;
-  if (total_team_sync_events != 0) {
-    std::cout << "mma steps per team sync event: "
-              << double(total_mma_steps) / double(total_team_sync_events) << std::endl;
-  }
-  if (cooperative_tile_loads == 0) {
-    std::cout << "*** load reduction check failed: no cooperative loads recorded" << std::endl;
-    ++errors;
-  } else {
-    std::cout << "tile load reduction: "
-              << double(baseline_tile_loads) / double(cooperative_tile_loads)
+  if (total_dxa_global_bytes != 0) {
+    std::cout << "global byte reduction: "
+              << double(total_baseline_global_bytes) / double(total_dxa_global_bytes)
               << "x" << std::endl;
+  }
+  if (total_dxa_commands != 0) {
+    std::cout << "mma steps per dxa command: "
+              << double(total_mma_steps) / double(total_dxa_commands) << std::endl;
   }
 #endif
 

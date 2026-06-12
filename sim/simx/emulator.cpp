@@ -34,11 +34,17 @@ using namespace vortex;
 static constexpr uint32_t kCooperativeBarrierId = 0xC0000000u;
 static constexpr uint32_t kCooperativeArriveId  = 0xC0000001u;
 static constexpr uint32_t kCooperativeWaitId    = 0xC0000002u;
+static constexpr uint32_t kTeamDxaStartId       = 0xC0000003u;
+static constexpr uint32_t kTeamDxaWaitSlot0Id   = 0xC0000004u;
+static constexpr uint32_t kTeamDxaWaitSlot1Id   = 0xC0000005u;
 static constexpr uint32_t kTeamPanelMode        = 2u;
 static constexpr uint32_t kTeamPanelOracleMode  = 3u;
+static constexpr uint32_t kTeamDxaStreamMode    = 4u;
 
 static bool is_team_panel_mode(uint32_t mode) {
-  return mode == kTeamPanelMode || mode == kTeamPanelOracleMode;
+  return mode == kTeamPanelMode
+      || mode == kTeamPanelOracleMode
+      || mode == kTeamDxaStreamMode;
 }
 
 warp_t::warp_t(uint32_t num_threads)
@@ -325,7 +331,10 @@ bool Emulator::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
 
   if (bar_id == kCooperativeBarrierId
    || bar_id == kCooperativeArriveId
-   || bar_id == kCooperativeWaitId) {
+   || bar_id == kCooperativeWaitId
+   || bar_id == kTeamDxaStartId
+   || bar_id == kTeamDxaWaitSlot0Id
+   || bar_id == kTeamDxaWaitSlot1Id) {
     cooperative_barrier_.set(wid);
     DP(3, "*** Suspend core #" << core_->id() << ", warp #" << wid << " at cooperative barrier");
     if (cooperative_barrier_.count() == active_warps_.count()) {
@@ -339,7 +348,14 @@ bool Emulator::barrier(uint32_t bar_id, uint32_t count, uint32_t wid) {
           }
         }
       } else {
-        core_->socket()->cluster()->cooperative_wait(core_->id());
+        if (bar_id == kCooperativeWaitId) {
+          core_->socket()->cluster()->cooperative_wait(core_->id());
+        } else if (bar_id == kTeamDxaStartId) {
+          core_->socket()->cluster()->cooperative_dxa_start(core_->id());
+        } else {
+          core_->socket()->cluster()->cooperative_dxa_wait_slot(core_->id(),
+                                                               bar_id == kTeamDxaWaitSlot1Id ? 1 : 0);
+        }
       }
       cooperative_barrier_.reset();
     }

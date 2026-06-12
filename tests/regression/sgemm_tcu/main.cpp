@@ -556,8 +556,8 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  if ((N % cfg::tileN) != 0) {
-    std::cout << "Error: M must be a multiple of tensor tileN!" << std::endl;
+  if ((N % (cfg::tileN * SGEMM_TCU_N_TILES)) != 0) {
+    std::cout << "Error: N must be a multiple of tensor tileN * SGEMM_TCU_N_TILES!" << std::endl;
     return -1;
   }
 
@@ -577,9 +577,26 @@ int main(int argc, char *argv[]) {
   std::cout << "matrix A: " << M << "x" << K << std::endl;
   std::cout << "matrix B: " << K << "x" << N << std::endl;
   std::cout << "matrix C: " << M << "x" << N << std::endl;
+  std::cout << "local-memory staging: " << (SGEMM_TCU_USE_LMEM ? "on" : "off") << std::endl;
+  std::cout << "N tiles per block: " << SGEMM_TCU_N_TILES << std::endl;
+
+  uint32_t local_mem = 0;
+  if (SGEMM_TCU_USE_LMEM) {
+    local_mem = (cfg::tileM * cfg::tileK + cfg::tileK * cfg::tileN * SGEMM_TCU_N_TILES) * sizeof(itype_t);
+  }
+  std::cout << "local memory: " << local_mem << " bytes" << std::endl;
+  uint32_t max_localmem = 0;
+  RT_CHECK(vx_check_occupancy(device, NUM_THREADS, &max_localmem));
+  std::cout << "occupancy: max_localmem=" << max_localmem << " bytes" << std::endl;
+  if (max_localmem < local_mem) {
+    std::cout << "Error: not enough local memory: needed=" << local_mem
+              << ", available=" << max_localmem << std::endl;
+    cleanup();
+    return -1;
+  }
 
   // set block size to warp size
-  kernel_arg.grid_dim[0] = N / cfg::tileN;
+  kernel_arg.grid_dim[0] = N / (cfg::tileN * SGEMM_TCU_N_TILES);
   kernel_arg.grid_dim[1] = M / cfg::tileM;
   kernel_arg.block_dim[0] = NT; // warp sizeb
   kernel_arg.block_dim[1] = 1;
