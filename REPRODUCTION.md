@@ -125,19 +125,15 @@ Run the DXA control/data-movement smoke tests:
 ```bash
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_csr --no-build
 
-./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_skeleton --no-build
-
-./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_lmem_write --no-build
-
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_panel_stream --no-build
 ```
 
 These tests validate:
 
 - Team/DXA CSR descriptor round-trip.
-- DXA start/wait command handling.
-- DXA-owned local-memory writes.
+- DXA start/wait command handling through the final stream path.
 - Panel-scale global-memory reads into ping-pong local panel slots.
+- DXA-owned local-memory writes to participating cores.
 
 ## RTL SGEMM Comparison Runs
 
