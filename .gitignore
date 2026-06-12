@@ -1,6 +1,7 @@
 /build*
 /logs/
 /.vscode
+.DS_Store
 *.cache
 *.code-workspace
 miscs/apptainer/vortex.sif

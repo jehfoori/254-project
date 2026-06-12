@@ -48,16 +48,7 @@ module VX_socket import VX_gpu_pkg::*; #(
 
 `ifdef GBAR_ENABLE
     VX_gbar_bus_if per_core_gbar_bus_if[`SOCKET_SIZE]();
-
-    VX_gbar_arb #(
-        .NUM_REQS (`SOCKET_SIZE),
-        .OUT_BUF  ((`SOCKET_SIZE > 1) ? 2 : 0)
-    ) gbar_arb (
-        .clk        (clk),
-        .reset      (reset),
-        .bus_in_if  (per_core_gbar_bus_if),
-        .bus_out_if (gbar_bus_if)
-    );
+    VX_gbar_bus_if filtered_gbar_bus_if[`SOCKET_SIZE]();
 `endif
 
     ///////////////////////////////////////////////////////////////////////////
@@ -214,6 +205,30 @@ module VX_socket import VX_gpu_pkg::*; #(
     ///////////////////////////////////////////////////////////////////////////
 
     wire [`SOCKET_SIZE-1:0] per_core_busy;
+    team_csr_state_t [`SOCKET_SIZE-1:0] per_core_team_csr_state;
+
+`ifdef GBAR_ENABLE
+    VX_team_dxa_engine #(
+        .NUM_REQS (`SOCKET_SIZE),
+        .INSTANCE_ID (`SFORMATF(("%s-dxa", INSTANCE_ID)))
+    ) team_dxa_engine (
+        .clk              (clk),
+        .reset            (reset),
+        .team_csr_state   (per_core_team_csr_state),
+        .core_gbar_bus_if (per_core_gbar_bus_if),
+        .gbar_bus_if      (filtered_gbar_bus_if)
+    );
+
+    VX_gbar_arb #(
+        .NUM_REQS (`SOCKET_SIZE),
+        .OUT_BUF  ((`SOCKET_SIZE > 1) ? 2 : 0)
+    ) gbar_arb (
+        .clk        (clk),
+        .reset      (reset),
+        .bus_in_if  (filtered_gbar_bus_if),
+        .bus_out_if (gbar_bus_if)
+    );
+`endif
 
     // Generate all cores
     for (genvar core_id = 0; core_id < `SOCKET_SIZE; ++core_id) begin : g_cores
@@ -245,6 +260,8 @@ module VX_socket import VX_gpu_pkg::*; #(
         `ifdef GBAR_ENABLE
             .gbar_bus_if    (per_core_gbar_bus_if[core_id]),
         `endif
+
+            .team_csr_state (per_core_team_csr_state[core_id]),
 
             .busy           (per_core_busy[core_id])
         );

@@ -24,6 +24,8 @@ Usage: scripts/rtl/run-rtl-test.sh --test NAME [options]
 
 Tests:
   coop_lmem
+  coop_dxa_csr
+  coop_dxa_skeleton
   sgemm_tcu
   coop_sgemm_tcu
 
@@ -106,7 +108,7 @@ if [[ -z "${TEST}" ]]; then
 fi
 
 case "${TEST}" in
-  coop_lmem|sgemm_tcu|coop_sgemm_tcu)
+  coop_lmem|coop_dxa_csr|coop_dxa_skeleton|sgemm_tcu|coop_sgemm_tcu)
     ;;
   *)
     echo "error: unsupported test: ${TEST}" >&2
@@ -131,7 +133,7 @@ run_configs="${CONFIGS}"
 opts=""
 
 case "${TEST}" in
-  coop_lmem)
+  coop_lmem|coop_dxa_csr|coop_dxa_skeleton)
     opts=""
     ;;
   sgemm_tcu)

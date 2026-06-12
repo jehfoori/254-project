@@ -41,6 +41,8 @@ module VX_core import VX_gpu_pkg::*; #(
     VX_gbar_bus_if.master   gbar_bus_if,
 `endif
 
+    output team_csr_state_t team_csr_state,
+
     // Status
     output wire             busy
 );
@@ -181,7 +183,8 @@ module VX_core import VX_gpu_pkg::*; #(
         .sched_csr_if   (sched_csr_if),
 
         .warp_ctl_if    (warp_ctl_if),
-        .branch_ctl_if  (branch_ctl_if)
+        .branch_ctl_if  (branch_ctl_if),
+        .team_csr_state (team_csr_state)
     );
 
     VX_commit #(

@@ -106,6 +106,25 @@ package VX_gpu_pkg;
     localparam VX_DCR_ADDR_WIDTH = `VX_DCR_ADDR_BITS;
     localparam VX_DCR_DATA_WIDTH = 32;
 
+    typedef struct packed {
+        logic [31:0]      src_offset;
+        logic [31:0]      copy_size;
+        logic [31:0]      dst_mask;
+        logic [31:0]      copy_mode;
+        logic [`XLEN-1:0] global_addr;
+    } team_copy_desc_t;
+
+    typedef struct packed {
+        logic [31:0] team_id;
+        logic [15:0] team_rank_x;
+        logic [15:0] team_rank_y;
+        logic [15:0] team_size_x;
+        logic [15:0] team_size_y;
+        logic [31:0] tile_rows;
+        logic [31:0] global_stride;
+        team_copy_desc_t [1:0] copy;
+    } team_csr_state_t;
+
     localparam STALL_TIMEOUT = (100000 * (1 ** (`L2_ENABLED + `L3_ENABLED)));
 
     ///////////////////////////////////////////////////////////////////////////
@@ -473,6 +492,7 @@ package VX_gpu_pkg;
     typedef struct packed {
         logic                   valid;
         logic [NB_WIDTH-1:0]    id;
+        logic [31:0]            raw_id;
         logic                   is_global;
     `ifdef GBAR_ENABLE
         logic [`MAX(NW_WIDTH, NC_WIDTH)-1:0] size_m1;

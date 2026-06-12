@@ -39,7 +39,9 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
 
     // Outputs
     VX_commit_if.master     commit_if [`ISSUE_WIDTH],
-    VX_warp_ctl_if.master   warp_ctl_if
+    VX_warp_ctl_if.master   warp_ctl_if,
+
+    output team_csr_state_t team_csr_state
 );
     `UNUSED_SPARAM (INSTANCE_ID)
     localparam BLOCK_SIZE   = 1;
@@ -133,7 +135,8 @@ module VX_sfu_unit import VX_gpu_pkg::*; #(
 
         .sched_csr_if   (sched_csr_if),
         .commit_csr_if  (commit_csr_if),
-        .result_if      (pe_result_if[PE_IDX_CSRS])
+        .result_if      (pe_result_if[PE_IDX_CSRS]),
+        .team_csr_state (team_csr_state)
     );
 
     VX_gather_unit #(
