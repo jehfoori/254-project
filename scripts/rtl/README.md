@@ -17,7 +17,7 @@ Run commands inside the project Docker image:
 
 By default this mounts:
 
-- host: `/Users/jef/Desktop/CS254-project/254-Project`
+- host: the parent directory containing sibling `vortex/` and `vortex-tools/`
 - container: `/root/254-Project`
 
 and sets:
@@ -25,6 +25,10 @@ and sets:
 - `VORTEX_HOME=/root/254-Project/vortex`
 - `TOOLDIR=/root/254-Project/vortex-tools`
 - `XLEN=64`
+- Docker platform: `linux/amd64`
+
+If `vortex-tools/` is not a sibling of `vortex/`, set `PROJECT_ROOT` to the
+directory containing both before running the scripts.
 
 ## Build RTLSIM
 

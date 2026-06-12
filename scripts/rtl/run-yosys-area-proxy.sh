@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_VORTEX_REPO="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 BASELINE_COMMIT="${BASELINE_COMMIT:-2f8d0ce26}"
 DXA_COMMIT="${DXA_COMMIT:-069249d51}"
-PROJECT_ROOT="${PROJECT_ROOT:-/Users/jef/Desktop/CS254-project/254-Project}"
-VORTEX_REPO="${VORTEX_REPO:-${PROJECT_ROOT}/vortex}"
+VORTEX_REPO="${VORTEX_REPO:-${DEFAULT_VORTEX_REPO}}"
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+  PROJECT_ROOT="$(cd "${VORTEX_REPO}/.." && pwd)"
+fi
 DOCKER_IMAGE="${YOSYS_DOCKER_IMAGE:-ubuntu:24.04}"
 TMP_PARENT="${TMP_PARENT:-/private/tmp}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"

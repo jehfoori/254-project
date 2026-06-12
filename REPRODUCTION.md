@@ -48,17 +48,14 @@ The workflow assumes the Vortex repo and `vortex-tools` are siblings:
   vortex-tools/
 ```
 
-If your checkout lives elsewhere, set `PROJECT_ROOT` to the directory containing
-both `vortex` and `vortex-tools` before running the scripts:
+From inside `vortex/`, the helper scripts auto-detect this parent directory.
+No local path variable is needed for the normal case.
+
+If you use a different layout, set `PROJECT_ROOT` to the directory containing
+both `vortex/` and `vortex-tools/`:
 
 ```bash
 export PROJECT_ROOT=/absolute/path/to/254-Project
-```
-
-For example, on the original development machine:
-
-```bash
-export PROJECT_ROOT=/Users/jef/Desktop/CS254-project/254-Project
 ```
 
 ## Required Tools
@@ -75,7 +72,7 @@ vortex-dev:latest
 - The Vortex tool bundle in:
 
 ```text
-$PROJECT_ROOT/vortex-tools
+../vortex-tools
 ```
 
 The helper scripts run commands inside Docker and set:
@@ -91,7 +88,6 @@ XLEN=64
 From the Vortex repo:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh bash
 ```
 
@@ -103,7 +99,6 @@ with `./scripts/rtl/docker-vortex.sh`.
 Build the RTL simulator:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/build-rtlsim.sh --jobs 1
 ```
 
@@ -128,16 +123,12 @@ logs/rtl/
 Run the DXA control/data-movement smoke tests:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_csr --no-build
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_skeleton --no-build
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_lmem_write --no-build
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh --test coop_dxa_panel_stream --no-build
 ```
 
@@ -161,15 +152,12 @@ Use stats-off runs for performance numbers.
 ### K=16
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 16 --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 16 --local-baseline --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 16 \
   --coop-n-tiles 1 --panel-k-tiles 1 --no-build --clean
@@ -186,15 +174,12 @@ Expected development-machine results:
 ### K=32
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 32 --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 32 --local-baseline --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 32 \
   --coop-n-tiles 1 --panel-k-tiles 1 --no-build --clean
@@ -211,15 +196,12 @@ Expected development-machine results:
 ### K=64
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 64 --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 64 --local-baseline --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 64 \
   --coop-n-tiles 1 --panel-k-tiles 2 --no-build --clean
@@ -236,15 +218,12 @@ Expected development-machine results:
 ### K=128
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 128 --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 128 --local-baseline --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 128 \
   --coop-n-tiles 1 --panel-k-tiles 4 --no-build --clean
@@ -265,15 +244,12 @@ precision sensitivity rather than DXA data corruption.
 ## Larger-M Scaling Point
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 64 --n 32 --k 32 --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 64 --n 32 --k 32 --local-baseline --no-build --clean
 
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 64 --n 32 --k 32 \
   --coop-n-tiles 1 --panel-k-tiles 1 --no-build --clean
@@ -295,7 +271,6 @@ They are useful for attributing time.
 Local-memory baseline timing:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test sgemm_tcu --m 32 --n 32 --k 32 \
   --local-baseline --timing --no-build --clean
@@ -304,7 +279,6 @@ PROJECT_ROOT=/absolute/path/to/254-Project \
 Cooperative DXA timing:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_sgemm_tcu --m 32 --n 32 --k 32 \
   --coop-n-tiles 1 --panel-k-tiles 1 \
@@ -323,7 +297,6 @@ Development-machine timing bucket results:
 Run:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/docker-vortex.sh ./scripts/rtl/run-rtl-test.sh \
   --test coop_dxa_panel_stream --profile --no-build --clean
 ```
@@ -381,7 +354,6 @@ The final SimX speedups over matching local-memory SGEMM were:
 A helper script is included:
 
 ```bash
-PROJECT_ROOT=/absolute/path/to/254-Project \
 ./scripts/rtl/run-yosys-area-proxy.sh
 ```
 
