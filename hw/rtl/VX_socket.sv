@@ -51,6 +51,11 @@ module VX_socket import VX_gpu_pkg::*; #(
     VX_gbar_bus_if filtered_gbar_bus_if[`SOCKET_SIZE]();
 `endif
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (LSU_WORD_SIZE),
+        .TAG_WIDTH (LMEM_TAG_WIDTH)
+    ) per_core_dxa_lmem_bus_if[`SOCKET_SIZE]();
+
     ///////////////////////////////////////////////////////////////////////////
 
 `ifdef PERF_ENABLE
@@ -215,6 +220,7 @@ module VX_socket import VX_gpu_pkg::*; #(
         .clk              (clk),
         .reset            (reset),
         .team_csr_state   (per_core_team_csr_state),
+        .dxa_lmem_bus_if  (per_core_dxa_lmem_bus_if),
         .core_gbar_bus_if (per_core_gbar_bus_if),
         .gbar_bus_if      (filtered_gbar_bus_if)
     );
@@ -254,6 +260,8 @@ module VX_socket import VX_gpu_pkg::*; #(
             .dcr_bus_if     (core_dcr_bus_if),
 
             .dcache_bus_if  (per_core_dcache_bus_if[core_id * DCACHE_NUM_REQS +: DCACHE_NUM_REQS]),
+
+            .dxa_lmem_bus_if(per_core_dxa_lmem_bus_if[core_id]),
 
             .icache_bus_if  (per_core_icache_bus_if[core_id]),
 

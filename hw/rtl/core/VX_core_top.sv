@@ -91,6 +91,12 @@ module VX_core_top import VX_gpu_pkg::*; #(
         .TAG_WIDTH (DCACHE_TAG_WIDTH)
     ) dcache_bus_if[DCACHE_NUM_REQS]();
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (LSU_WORD_SIZE),
+        .TAG_WIDTH (LMEM_TAG_WIDTH)
+    ) dxa_lmem_bus_if();
+    `INIT_VX_MEM_BUS_IF (dxa_lmem_bus_if)
+
     for (genvar i = 0; i < DCACHE_NUM_REQS; ++i) begin
         assign dcache_req_valid[i] = dcache_bus_if[i].req_valid;
         assign dcache_req_rw[i] = dcache_bus_if[i].req_data.rw;
@@ -143,6 +149,9 @@ module VX_core_top import VX_gpu_pkg::*; #(
     `UNUSED_VAR (scope_bus_out_w)
 `endif
 
+    team_csr_state_t team_csr_state;
+    `UNUSED_VAR (team_csr_state)
+
     VX_core #(
         .INSTANCE_ID (`SFORMATF(("core"))),
         .CORE_ID (CORE_ID)
@@ -159,11 +168,15 @@ module VX_core_top import VX_gpu_pkg::*; #(
 
         .dcache_bus_if  (dcache_bus_if),
 
+        .dxa_lmem_bus_if(dxa_lmem_bus_if),
+
         .icache_bus_if  (icache_bus_if),
 
     `ifdef GBAR_ENABLE
         .gbar_bus_if    (gbar_bus_if),
     `endif
+
+        .team_csr_state (team_csr_state),
 
         .busy           (busy)
     );

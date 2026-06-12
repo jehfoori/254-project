@@ -10,6 +10,7 @@ required_paths=(
   "${BUILD_DIR}/config.mk"
   "${BUILD_DIR}/runtime/rtlsim/Makefile"
   "${BUILD_DIR}/tests/regression/coop_dxa_csr/Makefile"
+  "${BUILD_DIR}/tests/regression/coop_dxa_lmem_write/Makefile"
   "${BUILD_DIR}/tests/regression/coop_dxa_skeleton/Makefile"
   "${BUILD_DIR}/tests/regression/coop_lmem/Makefile"
   "${BUILD_DIR}/tests/regression/sgemm_tcu/Makefile"

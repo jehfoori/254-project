@@ -35,6 +35,8 @@ module VX_core import VX_gpu_pkg::*; #(
 
     VX_mem_bus_if.master    dcache_bus_if [DCACHE_NUM_REQS],
 
+    VX_mem_bus_if.slave     dxa_lmem_bus_if,
+
     VX_mem_bus_if.master    icache_bus_if,
 
 `ifdef GBAR_ENABLE
@@ -211,6 +213,7 @@ module VX_core import VX_gpu_pkg::*; #(
         .coalescer_perf(coalescer_perf),
     `endif
         .lsu_mem_if    (lsu_mem_if),
+        .dxa_lmem_bus_if(dxa_lmem_bus_if),
         .dcache_bus_if (dcache_bus_if)
     );
 
