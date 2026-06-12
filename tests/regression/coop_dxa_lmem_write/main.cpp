@@ -28,6 +28,8 @@ constexpr uint32_t kTeamY = 2;
 constexpr uint32_t kBlockCount = kGridX * kGridY * kGridZ;
 
 vx_device_h device = nullptr;
+vx_buffer_h src0_buffer = nullptr;
+vx_buffer_h src1_buffer = nullptr;
 vx_buffer_h dst_buffer = nullptr;
 vx_buffer_h krnl_buffer = nullptr;
 vx_buffer_h args_buffer = nullptr;
@@ -35,6 +37,8 @@ kernel_arg_t kernel_arg = {};
 
 void cleanup() {
   if (device) {
+    vx_mem_free(src0_buffer);
+    vx_mem_free(src1_buffer);
     vx_mem_free(dst_buffer);
     vx_mem_free(krnl_buffer);
     vx_mem_free(args_buffer);
@@ -56,12 +60,23 @@ int main() {
   kernel_arg.block_dim[2] = kBlockZ;
   kernel_arg.team_dim[0] = kTeamX;
   kernel_arg.team_dim[1] = kTeamY;
+  kernel_arg.expected_slot0 = 0x13579bdf;
+  kernel_arg.expected_slot1 = 0x2468ace0;
 
+  auto src_buf_size = sizeof(uint32_t);
   auto dst_buf_size = kBlockCount * sizeof(result_t);
 
   std::cout << "allocate device memory" << std::endl;
+  RT_CHECK(vx_mem_alloc(device, src_buf_size, VX_MEM_READ, &src0_buffer));
+  RT_CHECK(vx_mem_alloc(device, src_buf_size, VX_MEM_READ, &src1_buffer));
   RT_CHECK(vx_mem_alloc(device, dst_buf_size, VX_MEM_WRITE, &dst_buffer));
+  RT_CHECK(vx_mem_address(src0_buffer, &kernel_arg.src0_addr));
+  RT_CHECK(vx_mem_address(src1_buffer, &kernel_arg.src1_addr));
   RT_CHECK(vx_mem_address(dst_buffer, &kernel_arg.dst_addr));
+
+  std::cout << "upload source words" << std::endl;
+  RT_CHECK(vx_copy_to_dev(src0_buffer, &kernel_arg.expected_slot0, 0, src_buf_size));
+  RT_CHECK(vx_copy_to_dev(src1_buffer, &kernel_arg.expected_slot1, 0, src_buf_size));
 
   std::cout << "upload kernel binary" << std::endl;
   RT_CHECK(vx_upload_kernel_file(device, kernel_file, &krnl_buffer));

@@ -56,6 +56,11 @@ module VX_socket import VX_gpu_pkg::*; #(
         .TAG_WIDTH (LMEM_TAG_WIDTH)
     ) per_core_dxa_lmem_bus_if[`SOCKET_SIZE]();
 
+    VX_mem_bus_if #(
+        .DATA_SIZE (DCACHE_WORD_SIZE),
+        .TAG_WIDTH (DCACHE_TAG_WIDTH)
+    ) dxa_dcache_bus_if();
+
     ///////////////////////////////////////////////////////////////////////////
 
 `ifdef PERF_ENABLE
@@ -119,7 +124,33 @@ module VX_socket import VX_gpu_pkg::*; #(
     VX_mem_bus_if #(
         .DATA_SIZE (DCACHE_WORD_SIZE),
         .TAG_WIDTH (DCACHE_TAG_WIDTH)
-    ) per_core_dcache_bus_if[`SOCKET_SIZE * DCACHE_NUM_REQS]();
+    ) core_dcache_bus_if[`SOCKET_SIZE * DCACHE_NUM_REQS]();
+
+    VX_mem_bus_if #(
+        .DATA_SIZE (DCACHE_WORD_SIZE),
+        .TAG_WIDTH (DCACHE_TAG_WIDTH)
+    ) per_core_dcache_bus_if[DCACHE_NUM_INPUTS * DCACHE_NUM_REQS]();
+
+    for (genvar i = 0; i < `SOCKET_SIZE * DCACHE_NUM_REQS; ++i) begin : g_core_dcache_bus_if
+        `ASSIGN_VX_MEM_BUS_IF (per_core_dcache_bus_if[i], core_dcache_bus_if[i]);
+    end
+
+`ifdef GBAR_ENABLE
+    localparam DXA_DCACHE_INPUT_BASE = `SOCKET_SIZE * DCACHE_NUM_REQS;
+    `ASSIGN_VX_MEM_BUS_IF (per_core_dcache_bus_if[DXA_DCACHE_INPUT_BASE], dxa_dcache_bus_if);
+    for (genvar i = 1; i < DCACHE_NUM_REQS; ++i) begin : g_unused_dxa_dcache_lanes
+        assign per_core_dcache_bus_if[DXA_DCACHE_INPUT_BASE + i].req_valid = 1'b0;
+        assign per_core_dcache_bus_if[DXA_DCACHE_INPUT_BASE + i].req_data = '0;
+        assign per_core_dcache_bus_if[DXA_DCACHE_INPUT_BASE + i].rsp_ready = 1'b1;
+    end
+`else
+    `UNUSED_VAR (dxa_dcache_bus_if.req_valid)
+    `UNUSED_VAR (dxa_dcache_bus_if.req_data)
+    assign dxa_dcache_bus_if.req_ready = 1'b0;
+    assign dxa_dcache_bus_if.rsp_valid = 1'b0;
+    assign dxa_dcache_bus_if.rsp_data = '0;
+    `UNUSED_VAR (dxa_dcache_bus_if.rsp_ready)
+`endif
 
     VX_mem_bus_if #(
         .DATA_SIZE (DCACHE_LINE_SIZE),
@@ -131,7 +162,7 @@ module VX_socket import VX_gpu_pkg::*; #(
     VX_cache_cluster #(
         .INSTANCE_ID    (`SFORMATF(("%s-dcache", INSTANCE_ID))),
         .NUM_UNITS      (`NUM_DCACHES),
-        .NUM_INPUTS     (`SOCKET_SIZE),
+        .NUM_INPUTS     (DCACHE_NUM_INPUTS),
         .TAG_SEL_IDX    (0),
         .CACHE_SIZE     (`DCACHE_SIZE),
         .LINE_SIZE      (DCACHE_LINE_SIZE),
@@ -221,6 +252,7 @@ module VX_socket import VX_gpu_pkg::*; #(
         .reset            (reset),
         .team_csr_state   (per_core_team_csr_state),
         .dxa_lmem_bus_if  (per_core_dxa_lmem_bus_if),
+        .dxa_dcache_bus_if(dxa_dcache_bus_if),
         .core_gbar_bus_if (per_core_gbar_bus_if),
         .gbar_bus_if      (filtered_gbar_bus_if)
     );
@@ -259,7 +291,7 @@ module VX_socket import VX_gpu_pkg::*; #(
 
             .dcr_bus_if     (core_dcr_bus_if),
 
-            .dcache_bus_if  (per_core_dcache_bus_if[core_id * DCACHE_NUM_REQS +: DCACHE_NUM_REQS]),
+            .dcache_bus_if  (core_dcache_bus_if[core_id * DCACHE_NUM_REQS +: DCACHE_NUM_REQS]),
 
             .dxa_lmem_bus_if(per_core_dxa_lmem_bus_if[core_id]),
 

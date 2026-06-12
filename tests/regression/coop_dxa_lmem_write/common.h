@@ -7,7 +7,11 @@ typedef struct {
   uint32_t grid_dim[3];
   uint32_t block_dim[3];
   uint32_t team_dim[2];
+  uint64_t src0_addr;
+  uint64_t src1_addr;
   uint64_t dst_addr;
+  uint32_t expected_slot0;
+  uint32_t expected_slot1;
 } kernel_arg_t;
 
 typedef struct {

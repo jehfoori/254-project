@@ -5,8 +5,7 @@ enum : uint32_t {
   kScratchBytes = 16,
   kSlot0Word = 0,
   kSlot1Word = 2,
-  kSlot0Panels = 1,
-  kSlot1Panels = 1,
+  kPanelCount = 1,
   kCopyBytes = sizeof(uint32_t),
 };
 
@@ -18,7 +17,6 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   auto* dst_ptr = reinterpret_cast<result_t*>(arg->dst_addr);
   auto* scratch = reinterpret_cast<volatile uint32_t*>(__local_mem(kScratchBytes));
 
-  uint32_t team_rank = vx_team_rank();
   uint32_t slot0_offset = uint32_t(reinterpret_cast<uintptr_t>(&scratch[kSlot0Word])
                                 - uintptr_t(csr_read(VX_CSR_LOCAL_MEM_BASE)));
   uint32_t slot1_offset = uint32_t(reinterpret_cast<uintptr_t>(&scratch[kSlot1Word])
@@ -28,19 +26,19 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   scratch[kSlot1Word] = 0;
 
   vx_team_set_dxa_stream_slot_2d(0,
-                                 0x100000000ull + uint64_t(team_rank) * 0x1000ull,
+                                 arg->src0_addr,
                                  slot0_offset,
                                  kCopyBytes,
                                  1,
                                  kCopyBytes,
-                                 kSlot0Panels);
+                                 kPanelCount);
   vx_team_set_dxa_stream_slot_2d(1,
-                                 0x200000000ull + uint64_t(team_rank) * 0x1000ull,
+                                 arg->src1_addr,
                                  slot1_offset,
                                  kCopyBytes,
                                  1,
                                  kCopyBytes,
-                                 kSlot1Panels);
+                                 kPanelCount);
 
   vx_team_dxa_start();
   vx_team_dxa_wait_slot(0);
@@ -48,8 +46,8 @@ void kernel_body(kernel_arg_t* __UNIFORM__ arg) {
   vx_team_dxa_wait_slot(1);
   uint32_t slot1_value = scratch[kSlot1Word];
 
-  uint32_t expected_slot0 = 0xd0a00000u | team_rank;
-  uint32_t expected_slot1 = 0xd0a10000u | team_rank;
+  uint32_t expected_slot0 = arg->expected_slot0;
+  uint32_t expected_slot1 = arg->expected_slot1;
 
   dst_ptr[block_linear_id()] = {
     __team_rank_x,
