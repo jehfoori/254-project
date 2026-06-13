@@ -75,13 +75,15 @@ $HOME/tools
 `vortex-tools/` is just the local folder name we used for the Vortex toolchain;
 the Vortex installer itself installs into whatever `$TOOLDIR` points to.
 
-To install the prebuilt Vortex toolchain yourself, configure the repo with your
-chosen tool directory and run the installer:
+To install the prebuilt Vortex toolchain yourself, first build the Docker image
+below, then run the toolchain installer inside Docker:
 
 ```bash
-./configure --xlen=64 --tooldir=/absolute/path/to/toolchain-directory
-./ci/toolchain_install.sh --all
+./scripts/rtl/install-toolchain.sh --tooldir /absolute/path/to/toolchain-directory
 ```
+
+On macOS, do not run `./configure` directly on the host for this install step;
+Vortex's toolchain installer only recognizes Linux OS targets.
 
 ## Required Tools
 

@@ -33,6 +33,15 @@ and sets:
 installed elsewhere, set either `VORTEX_TOOLS` or Vortex's native `TOOLDIR` to
 the toolchain directory before running the scripts.
 
+If no toolchain is installed yet, build the Docker image first and run:
+
+```bash
+./scripts/rtl/install-toolchain.sh --tooldir /absolute/path/to/toolchain-directory
+```
+
+This runs Vortex's toolchain installer inside Linux Docker, which avoids the
+unsupported-OS error from running `./configure` directly on macOS.
+
 ## Build RTLSIM
 
 Inside Docker:
