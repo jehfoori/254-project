@@ -18,7 +18,7 @@ Run commands inside the project Docker image:
 By default this mounts:
 
 - host repo: this checkout
-- host tools: sibling `../vortex-tools`
+- host tools: `VORTEX_TOOLS`, `TOOLDIR`, sibling `../vortex-tools`, or `$HOME/tools`
 - container repo: `/root/254-Project/vortex`
 - container tools: `/root/254-Project/vortex-tools`
 
@@ -29,8 +29,9 @@ and sets:
 - `XLEN=64`
 - Docker platform: `linux/amd64`
 
-If `vortex-tools/` is not next to this repo, set `VORTEX_TOOLS` to the tool
-bundle path before running the scripts.
+`vortex-tools/` is only a convenience folder name. If your Vortex toolchain is
+installed elsewhere, set either `VORTEX_TOOLS` or Vortex's native `TOOLDIR` to
+the toolchain directory before running the scripts.
 
 ## Build RTLSIM
 

@@ -6,7 +6,15 @@ VORTEX_REPO="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [[ -z "${PROJECT_ROOT:-}" ]]; then
   PROJECT_ROOT="$(cd "${VORTEX_REPO}/.." && pwd)"
 fi
-TOOLS_DIR="${VORTEX_TOOLS:-${PROJECT_ROOT}/vortex-tools}"
+if [[ -n "${VORTEX_TOOLS:-}" ]]; then
+  TOOLS_DIR="${VORTEX_TOOLS}"
+elif [[ -n "${TOOLDIR:-}" ]]; then
+  TOOLS_DIR="${TOOLDIR}"
+elif [[ -d "${PROJECT_ROOT}/vortex-tools" ]]; then
+  TOOLS_DIR="${PROJECT_ROOT}/vortex-tools"
+else
+  TOOLS_DIR="${HOME}/tools"
+fi
 IMAGE="${VORTEX_DOCKER_IMAGE:-vortex-dev:latest}"
 PLATFORM="${VORTEX_DOCKER_PLATFORM:-linux/amd64}"
 CONTAINER_ROOT="${CONTAINER_ROOT:-/root/254-Project}"
@@ -19,8 +27,13 @@ if [[ ! -d "${VORTEX_REPO}/.git" ]]; then
   exit 1
 fi
 if [[ ! -d "${TOOLS_DIR}" ]]; then
-  echo "error: expected vortex-tools at ${TOOLS_DIR}" >&2
-  echo "hint: keep vortex-tools/ next to this repo, or set VORTEX_TOOLS explicitly" >&2
+  echo "error: expected Vortex toolchain directory at ${TOOLS_DIR}" >&2
+  echo "hint: set VORTEX_TOOLS or TOOLDIR to the directory containing llvm-vortex/ and riscv64-gnu-toolchain/" >&2
+  exit 1
+fi
+if [[ ! -x "${TOOLS_DIR}/llvm-vortex/bin/clang++" || ! -d "${TOOLS_DIR}/riscv64-gnu-toolchain" ]]; then
+  echo "error: ${TOOLS_DIR} does not look like a Vortex toolchain directory" >&2
+  echo "hint: it should contain llvm-vortex/ and riscv64-gnu-toolchain/" >&2
   exit 1
 fi
 

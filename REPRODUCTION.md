@@ -39,23 +39,47 @@ The final implementation includes:
 - A 4-entry tagged DXA global-read window.
 - Regressions for CSR, control, local-memory write, panel stream, and SGEMM.
 
-## Required Layout
+## Required Toolchain
 
-The workflow assumes this repo and `vortex-tools` are siblings:
+The workflow needs the standard Vortex prebuilt toolchain directory. It must
+contain entries such as:
 
 ```text
-254-Project/
-  <this repo>/
-  vortex-tools/
+llvm-vortex/
+riscv64-gnu-toolchain/
+libc64/
+libcrt64/
+verilator/
 ```
 
-From inside the repo, the helper scripts auto-detect this layout. The repo
-folder does not need to have a specific name.
-
-If you use a different layout, set `VORTEX_TOOLS` to the tool bundle path:
+If a course bundle is provided, point the scripts at it:
 
 ```bash
-export VORTEX_TOOLS=/absolute/path/to/vortex-tools
+export VORTEX_TOOLS=/absolute/path/to/toolchain-directory
+```
+
+The scripts also accept Vortex's native `TOOLDIR` name:
+
+```bash
+export TOOLDIR=/absolute/path/to/toolchain-directory
+```
+
+As a convenience only, if neither variable is set, the scripts look for:
+
+```text
+../vortex-tools
+$HOME/tools
+```
+
+`vortex-tools/` is just the local folder name we used for the Vortex toolchain;
+the Vortex installer itself installs into whatever `$TOOLDIR` points to.
+
+To install the prebuilt Vortex toolchain yourself, configure the repo with your
+chosen tool directory and run the installer:
+
+```bash
+./configure --xlen=64 --tooldir=/absolute/path/to/toolchain-directory
+./ci/toolchain_install.sh --all
 ```
 
 ## Required Tools
@@ -67,12 +91,6 @@ You need:
 
 ```text
 vortex-dev:latest
-```
-
-- The Vortex tool bundle in:
-
-```text
-../vortex-tools
 ```
 
 If `vortex-dev:latest` is not already present, build it from the repo root:
