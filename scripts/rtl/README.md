@@ -17,8 +17,10 @@ Run commands inside the project Docker image:
 
 By default this mounts:
 
-- host: the parent directory containing sibling `vortex/` and `vortex-tools/`
-- container: `/root/254-Project`
+- host repo: this checkout
+- host tools: sibling `../vortex-tools`
+- container repo: `/root/254-Project/vortex`
+- container tools: `/root/254-Project/vortex-tools`
 
 and sets:
 
@@ -27,8 +29,8 @@ and sets:
 - `XLEN=64`
 - Docker platform: `linux/amd64`
 
-If `vortex-tools/` is not a sibling of `vortex/`, set `PROJECT_ROOT` to the
-directory containing both before running the scripts.
+If `vortex-tools/` is not next to this repo, set `VORTEX_TOOLS` to the tool
+bundle path before running the scripts.
 
 ## Build RTLSIM
 

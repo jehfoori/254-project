@@ -6,6 +6,7 @@ VORTEX_REPO="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [[ -z "${PROJECT_ROOT:-}" ]]; then
   PROJECT_ROOT="$(cd "${VORTEX_REPO}/.." && pwd)"
 fi
+TOOLS_DIR="${VORTEX_TOOLS:-${PROJECT_ROOT}/vortex-tools}"
 IMAGE="${VORTEX_DOCKER_IMAGE:-vortex-dev:latest}"
 PLATFORM="${VORTEX_DOCKER_PLATFORM:-linux/amd64}"
 CONTAINER_ROOT="${CONTAINER_ROOT:-/root/254-Project}"
@@ -13,13 +14,13 @@ CONTAINER_VORTEX="${CONTAINER_ROOT}/vortex"
 CONTAINER_TOOLS="${CONTAINER_ROOT}/vortex-tools"
 CONTAINER_PATH="${CONTAINER_TOOLS}/verilator/bin:${CONTAINER_TOOLS}/llvm-vortex/bin:${CONTAINER_TOOLS}/riscv64-gnu-toolchain/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-if [[ ! -d "${PROJECT_ROOT}/vortex" ]]; then
-  echo "error: expected vortex repo at ${PROJECT_ROOT}/vortex" >&2
+if [[ ! -d "${VORTEX_REPO}/.git" ]]; then
+  echo "error: expected Vortex git repo at ${VORTEX_REPO}" >&2
   exit 1
 fi
-if [[ ! -d "${PROJECT_ROOT}/vortex-tools" ]]; then
-  echo "error: expected vortex-tools at ${PROJECT_ROOT}/vortex-tools" >&2
-  echo "hint: keep vortex/ and vortex-tools/ as sibling directories, or set PROJECT_ROOT explicitly" >&2
+if [[ ! -d "${TOOLS_DIR}" ]]; then
+  echo "error: expected vortex-tools at ${TOOLS_DIR}" >&2
+  echo "hint: keep vortex-tools/ next to this repo, or set VORTEX_TOOLS explicitly" >&2
   exit 1
 fi
 
@@ -34,7 +35,8 @@ fi
 
 exec docker run --rm "${tty_flags[@]}" \
   --platform "${PLATFORM}" \
-  -v "${PROJECT_ROOT}:${CONTAINER_ROOT}" \
+  -v "${VORTEX_REPO}:${CONTAINER_VORTEX}" \
+  -v "${TOOLS_DIR}:${CONTAINER_TOOLS}" \
   -w "${CONTAINER_VORTEX}" \
   -e VORTEX_HOME="${CONTAINER_VORTEX}" \
   -e TOOLDIR="${CONTAINER_TOOLS}" \

@@ -40,22 +40,21 @@ The final implementation includes:
 
 ## Required Layout
 
-The workflow assumes the Vortex repo and `vortex-tools` are siblings:
+The workflow assumes this repo and `vortex-tools` are siblings:
 
 ```text
 254-Project/
-  vortex/
+  <this repo>/
   vortex-tools/
 ```
 
-From inside `vortex/`, the helper scripts auto-detect this parent directory.
-No local path variable is needed for the normal case.
+From inside the repo, the helper scripts auto-detect this layout. The repo
+folder does not need to have a specific name.
 
-If you use a different layout, set `PROJECT_ROOT` to the directory containing
-both `vortex/` and `vortex-tools/`:
+If you use a different layout, set `VORTEX_TOOLS` to the tool bundle path:
 
 ```bash
-export PROJECT_ROOT=/absolute/path/to/254-Project
+export VORTEX_TOOLS=/absolute/path/to/vortex-tools
 ```
 
 ## Required Tools
