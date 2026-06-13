@@ -8,6 +8,7 @@ BUILD_DIR="${BUILD_DIR:-${VORTEX_HOME}/build}"
 
 required_paths=(
   "${BUILD_DIR}/config.mk"
+  "${BUILD_DIR}/hw/VX_config.h"
   "${BUILD_DIR}/runtime/rtlsim/Makefile"
   "${BUILD_DIR}/tests/regression/coop_dxa_csr/Makefile"
   "${BUILD_DIR}/tests/regression/coop_dxa_panel_stream/Makefile"

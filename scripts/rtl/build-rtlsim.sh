@@ -60,6 +60,9 @@ if [[ "${#missing_deps[@]}" -ne 0 ]]; then
   exit 1
 fi
 
+echo "building third-party runtime dependencies"
+make -C "${VORTEX_HOME}/third_party"
+
 "${SCRIPT_DIR}/ensure-build.sh"
 
 mkdir -p "${LOG_DIR}"
