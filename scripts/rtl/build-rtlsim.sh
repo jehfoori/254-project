@@ -68,6 +68,9 @@ make -C "${VORTEX_HOME}/third_party"
 echo "generating hardware configuration headers"
 make -C "${BUILD_DIR}/hw"
 
+echo "building common runtime library"
+make -C "${BUILD_DIR}/runtime/stub"
+
 mkdir -p "${LOG_DIR}"
 timestamp="$(date +%Y%m%d-%H%M%S)"
 log_file="${LOG_DIR}/build-rtlsim-${timestamp}.log"

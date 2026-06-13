@@ -63,7 +63,7 @@ export VORTEX_TOOLS=/absolute/path/to/vortex-tools
 You need:
 
 - Docker with the daemon running.
-- The course/Vortex Docker image:
+- The course/Vortex Docker image, tagged locally as:
 
 ```text
 vortex-dev:latest
@@ -74,6 +74,16 @@ vortex-dev:latest
 ```text
 ../vortex-tools
 ```
+
+If `vortex-dev:latest` is not already present, build it from the repo root:
+
+```bash
+docker build --platform linux/amd64 -t vortex-dev -f Dockerfile.dev .
+```
+
+The lab handout requires an x86_64 Linux environment and suggests Docker for
+Apple Silicon, but it does not provide a pre-named `vortex-dev:latest` image.
+That tag is a local convenience tag for this repo's `Dockerfile.dev`.
 
 The helper scripts run commands inside Docker and set:
 
