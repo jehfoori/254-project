@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_VORTEX_REPO="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 BASELINE_COMMIT="${BASELINE_COMMIT:-2f8d0ce26}"
-DXA_COMMIT="${DXA_COMMIT:-069249d51}"
+DXA_COMMIT="${DXA_COMMIT:-HEAD}"
 VORTEX_REPO="${VORTEX_REPO:-${DEFAULT_VORTEX_REPO}}"
 if [[ -z "${PROJECT_ROOT:-}" ]]; then
   PROJECT_ROOT="$(cd "${VORTEX_REPO}/.." && pwd)"
@@ -20,9 +20,9 @@ else
   TOOLS_DIR="${HOME}/tools"
 fi
 DOCKER_IMAGE="${YOSYS_DOCKER_IMAGE:-ubuntu:24.04}"
-TMP_PARENT="${TMP_PARENT:-/private/tmp}"
+TMP_PARENT="${TMP_PARENT:-${TMPDIR:-/tmp}}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
-TMP_ROOT="${TMP_ROOT:-$(mktemp -d "${TMP_PARENT}/vortex-yosys-area-${RUN_ID}.XXXXXX")}"
+TMP_ROOT="${TMP_ROOT:-$(mktemp -d "${TMP_PARENT%/}/vortex-yosys-area-${RUN_ID}.XXXXXX")}"
 LOG_ROOT="${LOG_ROOT:-${VORTEX_REPO}/logs/yosys-area/${RUN_ID}}"
 
 SYN_CONFIGS='-DDPI_DISABLE -DEXT_F_DISABLE -DNUM_WARPS=2 -DNUM_THREADS=2 -DGBAR_ENABLE'

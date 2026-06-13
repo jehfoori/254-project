@@ -22,10 +22,11 @@ dependencies before building:
 git submodule update --init --recursive
 ```
 
-The final implementation commit before merge was:
+The final merged branch is `master`. The reproduction workflow was last
+fresh-clone verified at:
 
 ```text
-069249d51 Add RTL DXA diagnostics and timing evidence
+c812e86f8 Generalize RTL toolchain path handling
 ```
 
 The final implementation includes:
@@ -385,7 +386,7 @@ This attempts a matched Yosys generic synthesis comparison between:
 
 ```text
 baseline: 2f8d0ce26
-DXA:      069249d51
+DXA:      current HEAD by default
 ```
 
 using:
