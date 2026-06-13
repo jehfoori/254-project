@@ -10,15 +10,16 @@ panels from global memory into core-local panel storage.
 Use the final merged branch:
 
 ```bash
-git clone https://github.com/jehfoori/254-project.git vortex
+git clone --recursive https://github.com/jehfoori/254-project.git vortex
 cd vortex
 git checkout master
 ```
 
-If the final branch has not been merged yet, use:
+If you already cloned without `--recursive`, initialize the Vortex third-party
+dependencies before building:
 
 ```bash
-git checkout true-dxa-tma-redo
+git submodule update --init --recursive
 ```
 
 The final implementation commit before merge was:

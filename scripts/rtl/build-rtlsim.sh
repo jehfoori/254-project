@@ -43,6 +43,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+missing_deps=()
+for dep in \
+  "${VORTEX_HOME}/third_party/hardfloat/source/fNToRecFN.v" \
+  "${VORTEX_HOME}/third_party/softfloat/source/include/softfloat.h" \
+  "${VORTEX_HOME}/third_party/ramulator/src/base/base.h"; do
+  if [[ ! -f "${dep}" ]]; then
+    missing_deps+=("${dep}")
+  fi
+done
+
+if [[ "${#missing_deps[@]}" -ne 0 ]]; then
+  echo "error: missing Vortex third-party dependencies:" >&2
+  printf '  %s\n' "${missing_deps[@]}" >&2
+  echo "hint: run 'git submodule update --init --recursive' from the repo root" >&2
+  exit 1
+fi
+
 "${SCRIPT_DIR}/ensure-build.sh"
 
 mkdir -p "${LOG_DIR}"
